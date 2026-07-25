@@ -15,6 +15,7 @@ struct UpdateChecklistSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Update checklist")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             Text("Select locations with updates to review one by one.")
                 .foregroundStyle(.secondary)
             if items.isEmpty {
@@ -30,6 +31,7 @@ struct UpdateChecklistSheet: View {
                         Spacer()
                         if item.isDirty {
                             Text("Dirty").font(.caption).foregroundStyle(.orange)
+                                .accessibilityLabel("Local edits")
                         }
                     }
                     .tag(item.locationId)

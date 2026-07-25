@@ -14,6 +14,7 @@ struct AddSourceSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Add Skill Source")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             TextField("Git URL", text: $url)
                 .textFieldStyle(.roundedBorder)
                 .disabled(isAdding)

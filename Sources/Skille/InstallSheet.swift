@@ -20,6 +20,7 @@ struct InstallSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Install")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             if let detail {
                 Text(detail.summary.displayName)
                     .foregroundStyle(.secondary)

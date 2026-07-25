@@ -19,6 +19,7 @@ struct SourcesHome: View {
             } actions: {
                 Button("Add Source", action: onAddSource)
             }
+            .accessibilityElement(children: .contain)
         } else {
             NavigationSplitView {
                 List(sources, selection: $selection) { source in
@@ -38,6 +39,7 @@ struct SourcesHome: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.orange.opacity(0.2), in: Capsule())
+                                .accessibilityLabel("Update available")
                         }
                     }
                     .tag(source.id)
@@ -92,6 +94,11 @@ struct SourceInspector: View {
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .accessibilityLabel(
+                                pkg.installedLocations.isEmpty
+                                    ? "Not installed"
+                                    : "\(pkg.installedLocations.count) installed locations"
+                            )
                         }
                         ForEach(pkg.installedLocations) { location in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {

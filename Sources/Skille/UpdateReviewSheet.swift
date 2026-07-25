@@ -14,6 +14,7 @@ struct UpdateReviewSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Update review")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             Text(review.onDiskPath)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
