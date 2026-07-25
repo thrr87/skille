@@ -179,7 +179,10 @@ struct LibraryShell: View {
                     .accessibilityAddTraits(.updatesFrequently)
             }
         }
-        .task { runScan(manual: false) }
+        .task {
+            guard controlPlane.hasSavedLibrary else { return }
+            runScan(manual: false)
+        }
         .background(
             WindowCloseGuard { window in
                 guard !editorSession.requestNavigation() else { return true }
@@ -444,16 +447,20 @@ struct SkillsHome: View {
                     )
                 } else {
                     ContentUnavailableView(
-                        query.isEmpty ? "Select a skill" : "No matching skills",
-                        systemImage: query.isEmpty ? "square.stack.3d.up" : "magnifyingglass",
+                        result.skills.isEmpty ? "No matching skills" : "Select a skill",
+                        systemImage: result.skills.isEmpty
+                            ? "magnifyingglass"
+                            : "square.stack.3d.up",
                         description: Text(
-                            query.isEmpty
-                                ? "SKILL.md opens here for reading and editing."
-                                : "Try a different search or clear a filter."
+                            result.skills.isEmpty
+                                ? "Try a different search or clear a filter."
+                                : "SKILL.md opens here for reading and editing."
                         )
                     )
                     .accessibilityLabel(
-                        query.isEmpty ? "Select a skill" : "No skills match the active search and filters"
+                        result.skills.isEmpty
+                            ? "No skills match the active search and filters"
+                            : "Select a skill"
                     )
                 }
             }

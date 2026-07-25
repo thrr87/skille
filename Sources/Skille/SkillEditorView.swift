@@ -95,7 +95,7 @@ struct SkillEditorView: View {
             case .text:
                 if showPreview && isMarkdown {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
                             ForEach(Array(previewBlocks.enumerated()), id: \.offset) { _, block in
                                 previewBlock(block)
                             }
@@ -104,6 +104,7 @@ struct SkillEditorView: View {
                             .padding()
                     }
                     .textSelection(.enabled)
+                    .accessibilityElement(children: .contain)
                     .accessibilityLabel("Markdown preview")
                 } else {
                     TextEditor(text: $session.buffer)

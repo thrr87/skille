@@ -16,6 +16,12 @@ public struct ControlPlane: Sendable {
     public let homeDirectory: URL
     private let git: any GitFetching
 
+    public var hasSavedLibrary: Bool {
+        FileManager.default.fileExists(
+            atPath: sidecarRoot.appendingPathComponent(SidecarStore.fileName).path
+        )
+    }
+
     public init(
         sidecarRoot: URL,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -442,19 +448,7 @@ public struct ControlPlane: Sendable {
     }
 
     public func createSkill(name: String, description: String, skillRootIds: [String]) throws {
-        guard (1...64).contains(name.count),
-              name.range(
-                of: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-                options: .regularExpression
-              ) != nil
-        else {
-            throw AuthoringError.invalidName
-        }
-        guard (1...1024).contains(description.count),
-              !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            throw AuthoringError.invalidDescription
-        }
+        try Self.validateSkillMetadata(name: name, description: description)
 
         var snap = try SidecarStore.load(from: sidecarRoot)
         let writableRoots = writableRootRecords(in: snap)
@@ -516,6 +510,22 @@ public struct ControlPlane: Sendable {
             staged.forEach { try? fm.removeItem(at: $0.url) }
             removeEmptyRoots(createdRoots, fileManager: fm)
             throw error
+        }
+    }
+
+    public static func validateSkillMetadata(name: String, description: String) throws {
+        guard (1...64).contains(name.count),
+              name.range(
+                of: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                options: .regularExpression
+              ) != nil
+        else {
+            throw AuthoringError.invalidName
+        }
+        guard (1...1024).contains(description.count),
+              !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AuthoringError.invalidDescription
         }
     }
 

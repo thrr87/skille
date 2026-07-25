@@ -24,4 +24,17 @@ struct ControlPlaneTests {
         #expect(url.path.contains("Application Support"))
         #expect(url.lastPathComponent == "Skille")
     }
+
+    @Test func savedLibraryMarksThatInitialScanWasAccepted() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home
+        )
+
+        #expect(plane.hasSavedLibrary == false)
+        _ = try plane.scan()
+        #expect(plane.hasSavedLibrary)
+    }
 }
