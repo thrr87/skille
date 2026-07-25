@@ -37,6 +37,7 @@ struct NewSkillSheet: View {
                 Button("Create") { create() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || selectedRoots.isEmpty)
             }
         }
