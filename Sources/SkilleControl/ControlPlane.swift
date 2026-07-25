@@ -274,6 +274,62 @@ public struct ControlPlane: Sendable {
         try SidecarStore.save(snap, to: sidecarRoot)
     }
 
+    public func createSkill(name: String, description: String, skillRootIds: [String]) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AuthoringError.invalidName }
+        let folder = sanitizedSkillFolderName(trimmed)
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        let fm = FileManager.default
+        let body = """
+        ---
+        name: \(trimmed)
+        description: \(description)
+        ---
+        # \(trimmed)
+
+        \(description)
+        """
+
+        for rootId in skillRootIds {
+            let rootPath: String
+            if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
+                rootPath = existing.path
+            } else if rootId == stableID("root", homeDirectory.appendingPathComponent(".agents/skills").path) {
+                rootPath = homeDirectory.appendingPathComponent(".agents/skills").path
+                try fm.createDirectory(
+                    at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+                snap.skillRoots.append(
+                    SkillRootRecord(id: rootId, adapterIds: [], path: rootPath)
+                )
+            } else {
+                throw InstallError.rootNotFound(rootId)
+            }
+
+            let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
+                .appendingPathComponent(folder, isDirectory: true)
+            if fm.fileExists(atPath: dest.path) {
+                throw AuthoringError.alreadyExists(dest.path)
+            }
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            try body.write(to: dest.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        }
+        try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
+    private func sanitizedSkillFolderName(_ name: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let mapped = String(name.lowercased().map { ch -> Character in
+            String(ch).rangeOfCharacter(from: allowed) != nil ? ch : "-"
+        })
+        var result = mapped
+        while result.contains("--") {
+            result = result.replacingOccurrences(of: "--", with: "-")
+        }
+        return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
     public static func normalizeGitURL(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasSuffix(".git") { /* keep */ }
@@ -711,6 +767,11 @@ public enum InstallError: Error, Equatable {
     case sourceNotFound
     case packageNotFound(String)
     case rootNotFound(String)
+}
+
+public enum AuthoringError: Error, Equatable {
+    case invalidName
+    case alreadyExists(String)
 }
 
 public enum EditorError: Error, Equatable {
