@@ -46,9 +46,10 @@ public struct ProcessGitFetch: GitFetching {
 }
 
 /// Test double: copies a local fixture directory into the cache (no network).
-public struct FixtureGitFetch: GitFetching {
+/// `commitSHA` is mutable so tests can simulate a newer remote tip.
+public final class FixtureGitFetch: GitFetching, @unchecked Sendable {
     public let fixtureRoot: URL
-    public let commitSHA: String
+    public var commitSHA: String
 
     public init(fixtureRoot: URL, commitSHA: String = "deadbeef") {
         self.fixtureRoot = fixtureRoot

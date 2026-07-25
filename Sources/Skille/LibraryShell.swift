@@ -85,6 +85,7 @@ struct LibraryShell: View {
         defer { isScanning = false }
         do {
             let result = try controlPlane.scan()
+            _ = try? controlPlane.checkUpdates()
             skills = controlPlane.listSkills()
             sources = controlPlane.listSources()
             if let selectedSkillID, !skills.contains(where: { $0.id == selectedSkillID }) {
@@ -278,6 +279,20 @@ struct SkillRow: View {
                             .padding(.vertical, 1)
                             .background(Color.accentColor.opacity(0.15), in: Capsule())
                     }
+                    if skill.hasUpdate {
+                        Text("Update")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.2), in: Capsule())
+                    }
+                    if skill.isDirty {
+                        Text("Dirty")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.red.opacity(0.15), in: Capsule())
+                    }
                 }
             }
             Spacer()
@@ -402,13 +417,23 @@ private struct SourcesHome: View {
         } else {
             NavigationSplitView {
                 List(sources, selection: $selection) { source in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(source.displayName)
-                            .font(.body.weight(.medium))
-                        Text("\(source.branch) · \(source.normalizedUrl)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.displayName)
+                                .font(.body.weight(.medium))
+                            Text("\(source.branch) · \(source.normalizedUrl)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if source.hasUpdate {
+                            Text("Update")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.orange.opacity(0.2), in: Capsule())
+                        }
                     }
                     .tag(source.id)
                 }
