@@ -6,21 +6,19 @@ struct SkillEditorView: View {
     let controlPlane: ControlPlane
     let skillPath: String
     let title: String
+    @Binding var session: EditorSession
     var showsCloseButton: Bool = false
     var onSaved: () -> Void = {}
+    var requestNavigation: (@escaping () -> Void) -> Void = { $0() }
 
     @State private var files: [SkillFileEntry] = []
     @State private var selected: String?
-    @State private var buffer = ""
-    @State private var original = ""
-    @State private var fileKind: SkillFileKind = .text("")
     @State private var showPreview = false
     @State private var status: String?
     @Environment(\.dismiss) private var dismiss
 
     private var isDirty: Bool {
-        guard case .text = fileKind else { return false }
-        return buffer != original
+        session.isDirty
     }
 
     var body: some View {
@@ -34,7 +32,7 @@ struct SkillEditorView: View {
         .toolbar {
             if showsCloseButton {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button("Close") { requestNavigation { dismiss() } }
                         .keyboardShortcut(.cancelAction)
                 }
             }
@@ -44,7 +42,7 @@ struct SkillEditorView: View {
                         .keyboardShortcut("p", modifiers: [.command, .shift])
                         .accessibilityLabel("Toggle markdown preview")
                 }
-                if case .text = fileKind {
+                if case .text = session.fileKind {
                     Button("Save") { save() }
                         .keyboardShortcut("s")
                         .disabled(!isDirty)
@@ -54,29 +52,27 @@ struct SkillEditorView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let status {
-                Text(status)
+            if let footerStatus {
+                Text(footerStatus)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isDirty ? .orange : .secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
                     .background(.bar)
-                    .accessibilityLabel(status)
+                    .accessibilityLabel(footerStatus)
             }
         }
         .onAppear { reloadTree() }
-        .onChange(of: selected) { _, newValue in
-            if let newValue { load(newValue) }
-        }
         .onChange(of: skillPath) { _, _ in
             selected = nil
             reloadTree()
         }
+        .onChange(of: session.buffer) { _, _ in status = nil }
     }
 
     private var fileSidebar: some View {
-        List(files, selection: $selected) { file in
+        List(files, selection: selectedFile) { file in
             Text(file.relativePath)
                 .font(.caption.monospaced())
                 .lineLimit(1)
@@ -93,7 +89,7 @@ struct SkillEditorView: View {
         if selected == nil {
             ContentUnavailableView("Select a file", systemImage: "doc")
         } else {
-            switch fileKind {
+            switch session.fileKind {
             case .text:
                 if showPreview && isMarkdown {
                     ScrollView {
@@ -104,13 +100,13 @@ struct SkillEditorView: View {
                     }
                     .accessibilityLabel("Markdown preview")
                 } else {
-                    TextEditor(text: $buffer)
+                    TextEditor(text: $session.buffer)
                         .font(.system(.body, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .padding(4)
                         .background(Color(nsColor: .textBackgroundColor))
                         .accessibilityLabel(selected ?? "File contents")
-                        .accessibilityValue(buffer)
+                        .accessibilityValue(session.buffer)
                         .accessibilityHint("Editable text. Press Command S to save.")
                 }
             case .nonText:
@@ -126,7 +122,24 @@ struct SkillEditorView: View {
     }
 
     private var markdownPreview: AttributedString {
-        (try? AttributedString(markdown: buffer)) ?? AttributedString(buffer)
+        (try? AttributedString(markdown: session.buffer)) ?? AttributedString(session.buffer)
+    }
+
+    private var footerStatus: String? {
+        isDirty ? "Unsaved changes" : status
+    }
+
+    private var selectedFile: Binding<String?> {
+        Binding(
+            get: { selected },
+            set: { newValue in
+                guard newValue != selected else { return }
+                requestNavigation {
+                    selected = newValue
+                    if let newValue { load(newValue) }
+                }
+            }
+        )
     }
 
     private func nonTextPane(message: String) -> some View {
@@ -148,24 +161,23 @@ struct SkillEditorView: View {
 
     private func reloadTree() {
         files = (try? controlPlane.listSkillFiles(at: skillPath)) ?? []
-        if selected == nil || !files.contains(where: { $0.relativePath == selected }) {
-            selected = files.first { $0.relativePath == "SKILL.md" }?.relativePath
+        let next = if let selected, files.contains(where: { $0.relativePath == selected }) {
+            selected
+        } else {
+            files.first { $0.relativePath == "SKILL.md" }?.relativePath
                 ?? files.first?.relativePath
         }
-        if let selected { load(selected) }
+        selected = next
+        if let next,
+           session.skillRootPath != skillPath || session.relativePath != next
+        {
+            load(next)
+        }
     }
 
     private func load(_ relative: String) {
         do {
-            let content = try controlPlane.readTextFile(at: skillPath, relativePath: relative)
-            fileKind = content.kind
-            if case let .text(text) = content.kind {
-                buffer = text
-                original = text
-            } else {
-                buffer = ""
-                original = ""
-            }
+            try session.open(skillRootPath: skillPath, relativePath: relative)
             status = nil
             showPreview = false
         } catch {
@@ -174,10 +186,8 @@ struct SkillEditorView: View {
     }
 
     private func save() {
-        guard let selected, case .text = fileKind else { return }
         do {
-            try controlPlane.writeTextFile(at: skillPath, relativePath: selected, content: buffer)
-            original = buffer
+            try session.save()
             status = "Saved"
             onSaved()
         } catch {

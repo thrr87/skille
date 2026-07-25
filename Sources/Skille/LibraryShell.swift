@@ -5,6 +5,7 @@ import SkilleControl
 /// Main window: Sources | Skills | Projects. Skills is home.
 struct LibraryShell: View {
     let controlPlane: ControlPlane
+    @State private var editorSession: EditorSession
     @State private var tab: LibraryTab = .skills
     @State private var skills: [SkillSummary] = []
     @State private var sources: [SkillSourceSummary] = []
@@ -19,9 +20,16 @@ struct LibraryShell: View {
     @State private var reviewQueue: [UpdateReview] = []
     @State private var activeReview: UpdateReview?
     @State private var skillFilter = ""
+    @State private var pendingNavigation: (() -> Void)?
+    @State private var navigationError: String?
+
+    init(controlPlane: ControlPlane) {
+        self.controlPlane = controlPlane
+        _editorSession = State(initialValue: EditorSession(controlPlane: controlPlane))
+    }
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: guardedTab) {
             SourcesHome(
                 controlPlane: controlPlane,
                 sources: sources,
@@ -36,14 +44,16 @@ struct LibraryShell: View {
             SkillsHome(
                 controlPlane: controlPlane,
                 skills: filteredSkills,
-                selection: $selectedSkillID,
+                selection: guardedSkillSelection,
                 filter: $skillFilter,
+                editorSession: $editorSession,
                 onAddProject: { addProject() },
                 onAddSource: { showAddSource = true },
                 onInventoryChanged: {
                     skills = controlPlane.listSkills()
                     sources = controlPlane.listSources()
-                }
+                },
+                requestNavigation: requestNavigation
             )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
@@ -70,9 +80,12 @@ struct LibraryShell: View {
         }
         .background(
             Group {
-                Button("") { tab = .sources }.keyboardShortcut("1", modifiers: [.command]).opacity(0)
-                Button("") { tab = .skills }.keyboardShortcut("2", modifiers: [.command]).opacity(0)
-                Button("") { tab = .projects }.keyboardShortcut("3", modifiers: [.command]).opacity(0)
+                Button("") { requestNavigation { tab = .sources } }
+                    .keyboardShortcut("1", modifiers: [.command]).opacity(0)
+                Button("") { requestNavigation { tab = .skills } }
+                    .keyboardShortcut("2", modifiers: [.command]).opacity(0)
+                Button("") { requestNavigation { tab = .projects } }
+                    .keyboardShortcut("3", modifiers: [.command]).opacity(0)
             }
         )
         .sheet(isPresented: $showAddSource) {
@@ -132,6 +145,58 @@ struct LibraryShell: View {
             }
         }
         .task { runScan(manual: false) }
+        .background(
+            WindowCloseGuard { window in
+                guard !editorSession.requestNavigation() else { return true }
+                pendingNavigation = { window.performClose(nil) }
+                return false
+            }
+        )
+        .confirmationDialog(
+            "Save changes before leaving?",
+            isPresented: Binding(
+                get: { editorSession.hasPendingNavigation },
+                set: { presented in
+                    if !presented && editorSession.hasPendingNavigation {
+                        resolveNavigation(.cancel)
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Save") { resolveNavigation(.save) }
+            Button("Discard Changes", role: .destructive) {
+                resolveNavigation(.discard)
+            }
+            Button("Cancel", role: .cancel) { resolveNavigation(.cancel) }
+        } message: {
+            Text("Your edits have not been saved.")
+        }
+        .alert(
+            "Could Not Save",
+            isPresented: Binding(
+                get: { navigationError != nil },
+                set: { if !$0 { navigationError = nil } }
+            )
+        ) {
+            Button("OK") { navigationError = nil }
+        } message: {
+            Text(navigationError ?? "")
+        }
+    }
+
+    private var guardedTab: Binding<LibraryTab> {
+        Binding(
+            get: { tab },
+            set: { newValue in requestNavigation { tab = newValue } }
+        )
+    }
+
+    private var guardedSkillSelection: Binding<String?> {
+        Binding(
+            get: { selectedSkillID },
+            set: { newValue in requestNavigation { selectedSkillID = newValue } }
+        )
     }
 
     private var filteredSkills: [SkillSummary] {
@@ -149,7 +214,7 @@ struct LibraryShell: View {
             skills = controlPlane.listSkills()
             sources = controlPlane.listSources()
             if let selectedSkillID, !skills.contains(where: { $0.id == selectedSkillID }) {
-                self.selectedSkillID = nil
+                requestNavigation { self.selectedSkillID = nil }
             }
             if result.inventoryChanged || manual {
                 let message: String
@@ -175,6 +240,28 @@ struct LibraryShell: View {
         }
     }
 
+    private func requestNavigation(_ action: @escaping () -> Void) {
+        if editorSession.requestNavigation() {
+            action()
+        } else {
+            pendingNavigation = action
+        }
+    }
+
+    private func resolveNavigation(_ decision: EditorNavigationDecision) {
+        do {
+            guard try editorSession.resolveNavigation(decision) else {
+                pendingNavigation = nil
+                return
+            }
+            let action = pendingNavigation
+            pendingNavigation = nil
+            action?()
+        } catch {
+            navigationError = error.localizedDescription
+        }
+    }
+
     private func addProject() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -195,7 +282,7 @@ struct LibraryShell: View {
             let source = try controlPlane.addSource(url: url, branch: branch)
             sources = controlPlane.listSources()
             selectedSourceID = source.id
-            tab = .sources
+            requestNavigation { tab = .sources }
             showToast("Fetched \(source.displayName)")
         } catch {
             showToast("Add Source failed: \(error.localizedDescription)")
@@ -207,14 +294,93 @@ private enum LibraryTab: Hashable {
     case sources, skills, projects
 }
 
+private struct WindowCloseGuard: NSViewRepresentable {
+    let shouldClose: (NSWindow) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(shouldClose: shouldClose)
+    }
+
+    func makeNSView(context: Context) -> HostingView {
+        HostingView(coordinator: context.coordinator)
+    }
+
+    func updateNSView(_ view: HostingView, context: Context) {
+        context.coordinator.shouldClose = shouldClose
+    }
+
+    static func dismantleNSView(_ view: HostingView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class HostingView: NSView {
+        let coordinator: Coordinator
+
+        init(coordinator: Coordinator) {
+            self.coordinator = coordinator
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            coordinator.install(on: window)
+        }
+    }
+
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var shouldClose: (NSWindow) -> Bool
+        weak var window: NSWindow?
+        weak var originalDelegate: NSWindowDelegate?
+
+        init(shouldClose: @escaping (NSWindow) -> Bool) {
+            self.shouldClose = shouldClose
+        }
+
+        @MainActor func install(on window: NSWindow?) {
+            guard let window, window.delegate !== self else { return }
+            self.window = window
+            originalDelegate = window.delegate
+            window.delegate = self
+        }
+
+        @MainActor func uninstall() {
+            if window?.delegate === self {
+                window?.delegate = originalDelegate
+            }
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            shouldClose(sender) && (originalDelegate?.windowShouldClose?(sender) ?? true)
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector)
+                || (originalDelegate?.responds(to: selector) ?? false)
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            originalDelegate?.responds(to: selector) == true
+                ? originalDelegate
+                : super.forwardingTarget(for: selector)
+        }
+    }
+}
+
 struct SkillsHome: View {
     let controlPlane: ControlPlane
     let skills: [SkillSummary]
     @Binding var selection: String?
     @Binding var filter: String
+    @Binding var editorSession: EditorSession
     var onAddProject: () -> Void = {}
     var onAddSource: () -> Void = {}
     var onInventoryChanged: () -> Void = {}
+    var requestNavigation: (@escaping () -> Void) -> Void = { $0() }
 
     var body: some View {
         if skills.isEmpty && filter.isEmpty {
@@ -237,7 +403,9 @@ struct SkillsHome: View {
                     SkillInspector(
                         detail: detail,
                         controlPlane: controlPlane,
-                        onInventoryChanged: onInventoryChanged
+                        editorSession: $editorSession,
+                        onInventoryChanged: onInventoryChanged,
+                        requestNavigation: requestNavigation
                     )
                 } else {
                     ContentUnavailableView(
@@ -272,7 +440,9 @@ struct SkillsHome: View {
 struct SkillInspector: View {
     let detail: SkillDetail
     let controlPlane: ControlPlane
+    @Binding var editorSession: EditorSession
     var onInventoryChanged: () -> Void = {}
+    var requestNavigation: (@escaping () -> Void) -> Void = { $0() }
 
     @State private var activeLocationPath: String?
     @State private var reviewLocationId: String?
@@ -291,7 +461,9 @@ struct SkillInspector: View {
                     controlPlane: controlPlane,
                     skillPath: path,
                     title: detail.summary.displayName,
-                    onSaved: onInventoryChanged
+                    session: $editorSession,
+                    onSaved: onInventoryChanged,
+                    requestNavigation: requestNavigation
                 )
             } else {
                 ContentUnavailableView(
@@ -333,12 +505,16 @@ struct SkillInspector: View {
         }
         .onAppear { syncActiveLocation() }
         .onChange(of: detail.summary.id) { _, _ in syncActiveLocation() }
+        .onChange(of: detail.locations) { _, _ in syncActiveLocation() }
     }
 
     private var resolvedLocationPath: String? {
         if let activeLocationPath,
            detail.locations.contains(where: { $0.onDiskPath == activeLocationPath })
         {
+            return activeLocationPath
+        }
+        if editorSession.isDirty {
             return activeLocationPath
         }
         return detail.locations.first?.onDiskPath
@@ -411,16 +587,17 @@ struct SkillInspector: View {
     private var locationSelection: Binding<String?> {
         Binding(
             get: { resolvedLocationPath },
-            set: { activeLocationPath = $0 }
+            set: { newValue in
+                requestNavigation { activeLocationPath = newValue }
+            }
         )
     }
 
     private func syncActiveLocation() {
-        if activeLocationPath == nil
-            || !detail.locations.contains(where: { $0.onDiskPath == activeLocationPath })
-        {
-            activeLocationPath = detail.locations.first?.onDiskPath
+        guard !detail.locations.contains(where: { $0.onDiskPath == activeLocationPath }) else {
+            return
         }
+        requestNavigation { activeLocationPath = detail.locations.first?.onDiskPath }
     }
 
     private func startUpdate() {
