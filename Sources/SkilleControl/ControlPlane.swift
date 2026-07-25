@@ -538,6 +538,115 @@ public struct ControlPlane: Sendable {
         try locationIds.map { try prepareUpdateReview(locationId: $0) }
     }
 
+    public enum AttachPreview: Equatable, Sendable {
+        case newLogicalSkill
+        case joinExisting(logicalSkillId: String, displayName: String)
+    }
+
+    public func previewAttachSource(
+        locationId: String,
+        url: String,
+        branch: String = "main",
+        pathInRepo: String
+    ) throws -> AttachPreview {
+        let snap = try SidecarStore.load(from: sidecarRoot)
+        guard snap.locations.contains(where: { $0.id == locationId }) else {
+            throw AttachSourceError.locationNotFound
+        }
+        let normalized = Self.normalizeGitURL(url)
+        let sourceId = stableID("src", "\(normalized)|\(branch)")
+        let logicalID = stableID("logical", "\(sourceId)|\(pathInRepo)")
+        if let existing = snap.logicalSkills.first(where: { $0.id == logicalID }) {
+            return .joinExisting(logicalSkillId: existing.id, displayName: existing.displayName)
+        }
+        return .newLogicalSkill
+    }
+
+    public func attachSource(
+        locationId: String,
+        url: String,
+        branch: String = "main",
+        pathInRepo: String,
+        confirmJoin: Bool
+    ) throws {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        guard let index = snap.locations.firstIndex(where: { $0.id == locationId }) else {
+            throw AttachSourceError.locationNotFound
+        }
+        var loc = snap.locations[index]
+        guard loc.logicalSkillId == nil else {
+            throw AttachSourceError.notOrphan
+        }
+
+        let preview = try previewAttachSource(
+            locationId: locationId,
+            url: url,
+            branch: branch,
+            pathInRepo: pathInRepo
+        )
+        if case .joinExisting = preview, !confirmJoin {
+            throw AttachSourceError.confirmationRequired
+        }
+
+        // Ensure source exists (fetch into cache); never silent — caller provided URL.
+        let source = try addSource(url: url, branch: branch)
+        snap = try SidecarStore.load(from: sidecarRoot)
+
+        let logicalID = stableID("logical", "\(source.id)|\(pathInRepo)")
+        if !snap.logicalSkills.contains(where: { $0.id == logicalID }) {
+            snap.logicalSkills.append(
+                LogicalSkillRecord(
+                    id: logicalID,
+                    sourceId: source.id,
+                    skillPathInRepo: pathInRepo,
+                    displayName: loc.displayName
+                )
+            )
+        }
+
+        guard let sourceRecord = snap.sources.first(where: { $0.id == source.id }),
+              let locIndex = snap.locations.firstIndex(where: { $0.id == locationId })
+        else {
+            throw AttachSourceError.locationNotFound
+        }
+        loc = snap.locations[locIndex]
+        loc.logicalSkillId = logicalID
+        loc.appliedCommitSHA = sourceRecord.commitSHA
+        loc.fileDigests = try Self.fileDigests(
+            ofTree: URL(fileURLWithPath: loc.onDiskPath, isDirectory: true)
+        )
+        snap.locations[locIndex] = loc
+        try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
+    /// Optional suggestion only — never auto-attaches.
+    public func suggestedGitOrigin(forLocationPath path: String) -> String? {
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        var cursor = dir
+        for _ in 0..<6 {
+            let gitDir = cursor.appendingPathComponent(".git")
+            if FileManager.default.fileExists(atPath: gitDir.path) {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                proc.arguments = ["-C", cursor.path, "remote", "get-url", "origin"]
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = Pipe()
+                try? proc.run()
+                proc.waitUntilExit()
+                guard proc.terminationStatus == 0 else { return nil }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let url = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (url?.isEmpty == false) ? url : nil
+            }
+            let parent = cursor.deletingLastPathComponent()
+            if parent.path == cursor.path { break }
+            cursor = parent
+        }
+        return nil
+    }
+
     public static func diffTrees(local: URL, remote: URL) throws -> [UpdateFileChange] {
         let localDigests = Dictionary(
             uniqueKeysWithValues: (try fileDigests(ofTree: local)).map { ($0.relPath, $0) }
@@ -957,6 +1066,12 @@ public enum UpdateReviewError: Error, Equatable {
     case noProvenance
     case remoteMissing
     case dirtyRequiresDiscard
+}
+
+public enum AttachSourceError: Error, Equatable {
+    case locationNotFound
+    case notOrphan
+    case confirmationRequired
 }
 
 public enum UpdateFileStatus: String, Equatable, Sendable {
