@@ -15,6 +15,9 @@ struct LibraryShell: View {
     @State private var showAddSource = false
     @State private var showNewSkill = false
     @State private var installSourceID: String?
+    @State private var checklistSourceID: String?
+    @State private var reviewQueue: [UpdateReview] = []
+    @State private var activeReview: UpdateReview?
 
     var body: some View {
         TabView(selection: $tab) {
@@ -23,7 +26,8 @@ struct LibraryShell: View {
                 sources: sources,
                 selection: $selectedSourceID,
                 onAddSource: { showAddSource = true },
-                onInstall: { installSourceID = $0 }
+                onInstall: { installSourceID = $0 },
+                onUpdateChecklist: { checklistSourceID = $0 }
             )
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
@@ -75,6 +79,27 @@ struct LibraryShell: View {
                     sources = controlPlane.listSources()
                     showToast("Install complete")
                 }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { checklistSourceID != nil },
+            set: { if !$0 { checklistSourceID = nil } }
+        )) {
+            if let checklistSourceID {
+                UpdateChecklistSheet(controlPlane: controlPlane, sourceId: checklistSourceID) { reviews in
+                    reviewQueue = reviews
+                    activeReview = reviewQueue.first
+                }
+            }
+        }
+        .sheet(item: $activeReview) { review in
+            UpdateReviewSheet(controlPlane: controlPlane, review: review) {
+                skills = controlPlane.listSkills()
+                sources = controlPlane.listSources()
+                if !reviewQueue.isEmpty {
+                    reviewQueue.removeFirst()
+                }
+                activeReview = reviewQueue.first
             }
         }
         .overlay(alignment: .bottom) {
@@ -302,6 +327,74 @@ extension String: @retroactive Identifiable {
     public var id: String { self }
 }
 
+extension UpdateReview: Identifiable {
+    public var id: String { locationId }
+}
+
+private struct UpdateChecklistSheet: View {
+    let controlPlane: ControlPlane
+    let sourceId: String
+    var onContinue: ([UpdateReview]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var items: [UpdateChecklistItem] = []
+    @State private var selected: Set<String> = []
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Update checklist")
+                .font(.title2.weight(.semibold))
+            Text("Select locations with updates to review one by one.")
+                .foregroundStyle(.secondary)
+            if items.isEmpty {
+                Text("No updates available for this source.")
+                    .foregroundStyle(.secondary)
+            } else {
+                List(items, selection: $selected) { item in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(item.displayName).font(.body.weight(.medium))
+                            Text(item.onDiskPath).font(.caption.monospaced())
+                        }
+                        Spacer()
+                        if item.isDirty {
+                            Text("Dirty").font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    .tag(item.locationId)
+                }
+                .frame(minHeight: 180)
+            }
+            if let errorText {
+                Text(errorText).foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Continue") { continueReviews() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selected.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 400)
+        .onAppear {
+            items = (try? controlPlane.locationsNeedingUpdate(sourceId: sourceId)) ?? []
+            selected = Set(items.map(\.locationId))
+        }
+    }
+
+    private func continueReviews() {
+        do {
+            let reviews = try controlPlane.prepareUpdateReviews(locationIds: Array(selected))
+            dismiss()
+            onContinue(reviews)
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+}
+
 struct SkillRow: View {
     let skill: SkillSummary
 
@@ -448,6 +541,7 @@ private struct SourcesHome: View {
     @Binding var selection: String?
     var onAddSource: () -> Void
     var onInstall: (String) -> Void
+    var onUpdateChecklist: (String) -> Void
 
     var body: some View {
         if sources.isEmpty {
@@ -484,7 +578,11 @@ private struct SourcesHome: View {
                 .navigationTitle("Sources")
             } detail: {
                 if let selection, let detail = controlPlane.sourceDetail(id: selection) {
-                    SourceInspector(detail: detail, onInstall: { onInstall(selection) })
+                    SourceInspector(
+                        detail: detail,
+                        onInstall: { onInstall(selection) },
+                        onUpdate: { onUpdateChecklist(selection) }
+                    )
                 } else {
                     ContentUnavailableView(
                         "Select a source",
@@ -500,6 +598,7 @@ private struct SourcesHome: View {
 private struct SourceInspector: View {
     let detail: SourceDetail
     var onInstall: () -> Void
+    var onUpdate: () -> Void
 
     var body: some View {
         List {
@@ -526,8 +625,8 @@ private struct SourceInspector: View {
             }
             Section {
                 Button("Install…", action: onInstall)
-                Button("Update…") {}
-                    .disabled(true)
+                Button("Update…", action: onUpdate)
+                    .disabled(!detail.summary.hasUpdate)
             }
         }
         .navigationTitle(detail.summary.displayName)
