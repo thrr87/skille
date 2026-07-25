@@ -369,43 +369,81 @@ public struct ControlPlane: Sendable {
     }
 
     public func createSkill(name: String, description: String, skillRootIds: [String]) throws {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw AuthoringError.invalidName }
-        let folder = sanitizedSkillFolderName(trimmed)
+        guard (1...64).contains(name.count),
+              name.range(
+                of: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                options: .regularExpression
+              ) != nil
+        else {
+            throw AuthoringError.invalidName
+        }
+        guard (1...1024).contains(description.count),
+              !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AuthoringError.invalidDescription
+        }
+
         var snap = try SidecarStore.load(from: sidecarRoot)
-        let body = """
-        ---
-        name: \(trimmed)
-        description: \(description)
-        ---
-        # \(trimmed)
-
-        \(description)
-        """
-
-        for rootId in skillRootIds {
-            let rootPath = try resolveRootPath(rootId, into: &snap)
-            let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
-                .appendingPathComponent(folder, isDirectory: true)
-            if FileManager.default.fileExists(atPath: dest.path) {
-                throw AuthoringError.alreadyExists(dest.path)
+        let writableRoots = writableRootRecords(in: snap)
+        let roots = try skillRootIds.map { rootId in
+            guard let root = writableRoots.first(where: { $0.id == rootId }) else {
+                throw InstallError.rootNotFound(rootId)
             }
-            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
-            try body.write(to: dest.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+            return root
         }
-        try SidecarStore.save(snap, to: sidecarRoot)
-    }
+        let destinations = roots.map {
+            URL(fileURLWithPath: $0.path, isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+        }
+        if let conflict = destinations.first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }) {
+            throw AuthoringError.alreadyExists(conflict.path)
+        }
 
-    private func sanitizedSkillFolderName(_ name: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let mapped = String(name.lowercased().map { ch -> Character in
-            String(ch).rangeOfCharacter(from: allowed) != nil ? ch : "-"
-        })
-        var result = mapped
-        while result.contains("--") {
-            result = result.replacingOccurrences(of: "--", with: "-")
+        let encoder = JSONEncoder()
+        let quotedName = String(decoding: try encoder.encode(name), as: UTF8.self)
+        let quotedDescription = String(decoding: try encoder.encode(description), as: UTF8.self)
+        let body = "---\nname: \(quotedName)\ndescription: \(quotedDescription)"
+            + "\n---\n# \(name)\n\n\(description)"
+        let fm = FileManager.default
+        var staged: [(url: URL, destination: URL)] = []
+        var committed: [URL] = []
+        var createdRoots: Set<URL> = []
+
+        do {
+            for (root, destination) in zip(roots, destinations) {
+                let rootURL = URL(fileURLWithPath: root.path, isDirectory: true)
+                if !fm.fileExists(atPath: rootURL.path) {
+                    try fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
+                    createdRoots.insert(rootURL)
+                }
+                let stage = rootURL.appendingPathComponent(
+                    ".skille-create-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+                try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+                staged.append((stage, destination))
+                try body.write(
+                    to: stage.appendingPathComponent("SKILL.md"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            for item in staged {
+                try fm.moveItem(at: item.url, to: item.destination)
+                committed.append(item.destination)
+            }
+            for root in roots where !snap.skillRoots.contains(where: { $0.id == root.id }) {
+                snap.skillRoots.append(root)
+            }
+            try SidecarStore.save(snap, to: sidecarRoot)
+        } catch {
+            committed.reversed().forEach { try? fm.removeItem(at: $0) }
+            staged.forEach { try? fm.removeItem(at: $0.url) }
+            removeEmptyRoots(createdRoots, fileManager: fm)
+            throw error
         }
-        return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 
     public static func normalizeGitURL(_ raw: String) -> String {

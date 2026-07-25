@@ -38,7 +38,21 @@ public enum InstallError: Error, Equatable {
 
 public enum AuthoringError: Error, Equatable {
     case invalidName
+    case invalidDescription
     case alreadyExists(String)
+}
+
+extension AuthoringError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidName:
+            "Name must be 1–64 lowercase letters, numbers, or single hyphens."
+        case .invalidDescription:
+            "Description must be 1–1024 non-whitespace characters."
+        case .alreadyExists(let path):
+            "A Skill already exists at \(path)."
+        }
+    }
 }
 
 public enum UpdateReviewError: Error, Equatable {
