@@ -90,7 +90,7 @@ struct LibraryShell: View {
         )
         .sheet(isPresented: $showAddSource) {
             AddSourceSheet { url, branch in
-                addSource(url: url, branch: branch)
+                try await addSource(url: url, branch: branch)
             }
         }
         .sheet(isPresented: $showNewSkill) {
@@ -271,16 +271,15 @@ struct LibraryShell: View {
         }
     }
 
-    private func addSource(url: String, branch: String) {
-        do {
-            let source = try controlPlane.addSource(url: url, branch: branch)
-            sources = controlPlane.listSources()
-            selectedSourceID = source.id
-            requestNavigation { tab = .sources }
-            showToast("Fetched \(source.displayName)")
-        } catch {
-            showToast("Add Source failed: \(error.localizedDescription)")
-        }
+    private func addSource(url: String, branch: String) async throws {
+        let plane = controlPlane
+        let source = try await Task.detached {
+            try plane.addSource(url: url, branch: branch)
+        }.value
+        sources = controlPlane.listSources()
+        selectedSourceID = source.id
+        requestNavigation { tab = .sources }
+        showToast("Fetched \(source.displayName)")
     }
 }
 

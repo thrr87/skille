@@ -73,6 +73,29 @@ public enum GitFetchError: Error, Equatable {
     case cloneFailed(status: Int32)
 }
 
+extension GitFetchError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .cloneFailed(let status):
+            "Git fetch failed (exit status \(status)). Check the URL, branch, and credentials."
+        }
+    }
+}
+
+public enum SourceError: Error, Equatable, LocalizedError {
+    case invalidURL
+    case invalidBranch
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            "Enter a git URL."
+        case .invalidBranch:
+            "Enter a branch name."
+        }
+    }
+}
+
 /// Optional suggestion only — never auto-attaches. Walks parents for `.git` / origin.
 public func suggestedGitOrigin(startingAt path: String) -> String? {
     var cursor = URL(fileURLWithPath: path, isDirectory: true)
