@@ -20,6 +20,16 @@ public struct ScanResult: Equatable, Sendable {
     }
 }
 
+public struct UpdateCheckResult: Equatable, Sendable {
+    public let updatesFound: Int
+    public let dirtyFound: Int
+
+    public init(updatesFound: Int, dirtyFound: Int) {
+        self.updatesFound = updatesFound
+        self.dirtyFound = dirtyFound
+    }
+}
+
 /// Primary control-plane seam: UI and tests drive Skille through this API.
 /// Inject `sidecarRoot`, `homeDirectory`, and `git` (temp dirs + FixtureGitFetch in tests).
 public struct ControlPlane: Sendable {
@@ -79,13 +89,22 @@ public struct ControlPlane: Sendable {
 
     public func listSources() -> [SkillSourceSummary] {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        let logicalBySource = Dictionary(grouping: snap.logicalSkills, by: \.sourceId)
         return snap.sources
-            .map {
-                SkillSourceSummary(
-                    id: $0.id,
-                    displayName: $0.displayName,
-                    normalizedUrl: $0.normalizedUrl,
-                    branch: $0.branch
+            .map { source in
+                let logicalIds = Set((logicalBySource[source.id] ?? []).map(\.id))
+                let hasUpdate = snap.locations.contains { loc in
+                    guard let lid = loc.logicalSkillId, logicalIds.contains(lid),
+                          let applied = loc.appliedCommitSHA
+                    else { return false }
+                    return source.commitSHA != applied
+                }
+                return SkillSourceSummary(
+                    id: source.id,
+                    displayName: source.displayName,
+                    normalizedUrl: source.normalizedUrl,
+                    branch: source.branch,
+                    hasUpdate: hasUpdate
                 )
             }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -293,6 +312,8 @@ public struct ControlPlane: Sendable {
 
     private func skillSummaries(from snap: SidecarSnapshot) -> [SkillSummary] {
         let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
+        let tipBySource = Dictionary(uniqueKeysWithValues: snap.sources.map { ($0.id, $0.commitSHA) })
+        let logicalById = Dictionary(uniqueKeysWithValues: snap.logicalSkills.map { ($0.id, $0) })
         // Group by logicalSkillId when present; otherwise one row per orphan location.
         var grouped: [String: [LocationRecord]] = [:]
         for loc in snap.locations {
@@ -302,17 +323,66 @@ public struct ControlPlane: Sendable {
         return grouped.map { key, locs in
             let sorted = locs.sorted { $0.onDiskPath < $1.onDiskPath }
             let fromProject = sorted.contains { roots[$0.skillRootId]?.scope == "project" }
+            let dirty = sorted.contains { Self.isDirty($0) }
+            let update = sorted.contains { loc in
+                guard let logicalId = loc.logicalSkillId,
+                      let logical = logicalById[logicalId],
+                      let tip = tipBySource[logical.sourceId],
+                      let applied = loc.appliedCommitSHA
+                else { return false }
+                return tip != applied
+            }
             return SkillSummary(
                 id: key,
                 displayName: sorted[0].displayName,
                 locationCount: sorted.count,
                 isOrphan: sorted.allSatisfy { $0.logicalSkillId == nil },
-                hasUpdate: false,
-                isDirty: false,
+                hasUpdate: update,
+                isDirty: dirty,
                 isFromProject: fromProject
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    public static func isDirty(_ location: LocationRecord) -> Bool {
+        guard !location.fileDigests.isEmpty else { return false }
+        let current = (try? fileDigests(ofTree: URL(fileURLWithPath: location.onDiskPath, isDirectory: true))) ?? []
+        return current != location.fileDigests
+    }
+
+    @discardableResult
+    public func checkUpdates() throws -> UpdateCheckResult {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        var updates = 0
+        var dirty = 0
+
+        for index in snap.sources.indices {
+            var source = snap.sources[index]
+            let cache = URL(fileURLWithPath: source.cachePath, isDirectory: true)
+            let tip = try git.fetch(url: source.normalizedUrl, branch: source.branch, into: cache)
+            source.commitSHA = tip
+            source.lastFetchAt = Date()
+            snap.sources[index] = source
+        }
+
+        let tipBySource = Dictionary(uniqueKeysWithValues: snap.sources.map { ($0.id, $0.commitSHA) })
+        let logicalById = Dictionary(uniqueKeysWithValues: snap.logicalSkills.map { ($0.id, $0) })
+
+        for loc in snap.locations {
+            if Self.isDirty(loc) { dirty += 1 }
+            if let logicalId = loc.logicalSkillId,
+               let logical = logicalById[logicalId],
+               let tip = tipBySource[logical.sourceId],
+               let applied = loc.appliedCommitSHA,
+               tip != applied
+            {
+                updates += 1
+            }
+        }
+
+        try SidecarStore.save(snap, to: sidecarRoot)
+        return UpdateCheckResult(updatesFound: updates, dirtyFound: dirty)
     }
 
     @discardableResult
@@ -756,12 +826,20 @@ public struct SkillSourceSummary: Identifiable, Equatable, Sendable {
     public let displayName: String
     public let normalizedUrl: String
     public let branch: String
+    public let hasUpdate: Bool
 
-    public init(id: String, displayName: String, normalizedUrl: String, branch: String) {
+    public init(
+        id: String,
+        displayName: String,
+        normalizedUrl: String,
+        branch: String,
+        hasUpdate: Bool = false
+    ) {
         self.id = id
         self.displayName = displayName
         self.normalizedUrl = normalizedUrl
         self.branch = branch
+        self.hasUpdate = hasUpdate
     }
 }
 
