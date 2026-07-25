@@ -301,16 +301,45 @@ public enum PackageInstallStatus: String, Equatable, Sendable {
     case installed
 }
 
+public struct InstalledSkillLocation: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let onDiskPath: String
+    public let skillRootPath: String
+    public let adapterIds: [String]
+    public let scope: String
+
+    public init(
+        id: String,
+        onDiskPath: String,
+        skillRootPath: String,
+        adapterIds: [String],
+        scope: String
+    ) {
+        self.id = id
+        self.onDiskPath = onDiskPath
+        self.skillRootPath = skillRootPath
+        self.adapterIds = adapterIds
+        self.scope = scope
+    }
+}
+
 public struct SourcePackage: Identifiable, Equatable, Sendable {
     public var id: String { pathInRepo }
     public let pathInRepo: String
     public let displayName: String
-    public let installStatus: PackageInstallStatus
+    public let installedLocations: [InstalledSkillLocation]
+    public var installStatus: PackageInstallStatus {
+        installedLocations.isEmpty ? .notInstalled : .installed
+    }
 
-    public init(pathInRepo: String, displayName: String, installStatus: PackageInstallStatus) {
+    public init(
+        pathInRepo: String,
+        displayName: String,
+        installedLocations: [InstalledSkillLocation] = []
+    ) {
         self.pathInRepo = pathInRepo
         self.displayName = displayName
-        self.installStatus = installStatus
+        self.installedLocations = installedLocations
     }
 }
 

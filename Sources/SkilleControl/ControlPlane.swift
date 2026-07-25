@@ -90,27 +90,70 @@ public struct ControlPlane: Sendable {
     @discardableResult
     public func addSource(url: String, branch: String = "main") throws -> SkillSourceSummary {
         let normalized = Self.normalizeGitURL(url)
+        guard !normalized.isEmpty else { throw SourceError.invalidURL }
+        guard !branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SourceError.invalidBranch
+        }
         let id = stableID("src", "\(normalized)|\(branch)")
         let cache = sidecarRoot
             .appendingPathComponent("cache", isDirectory: true)
             .appendingPathComponent(id.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
-        let sha = try git.fetch(url: normalized, branch: branch, into: cache)
+        let fm = FileManager.default
+        let stage = cache.deletingLastPathComponent().appendingPathComponent(
+            ".skille-fetch-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let backup = cache.deletingLastPathComponent().appendingPathComponent(
+            ".skille-fetch-backup-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        var movedExistingCache = false
+        var committedNewCache = false
+
+        let sha: String
+        do {
+            sha = try git.fetch(url: normalized, branch: branch, into: stage)
+            _ = discoverPackages(in: stage)
+            if fm.fileExists(atPath: cache.path) {
+                try fm.moveItem(at: cache, to: backup)
+                movedExistingCache = true
+            }
+            try fm.moveItem(at: stage, to: cache)
+            committedNewCache = true
+        } catch {
+            try? fm.removeItem(at: stage)
+            if movedExistingCache {
+                try? fm.moveItem(at: backup, to: cache)
+            }
+            throw error
+        }
         let display = URL(string: normalized)?.deletingPathExtension().lastPathComponent
             ?? normalized
 
-        var snap = try SidecarStore.load(from: sidecarRoot)
-        snap.sources.removeAll { $0.id == id }
-        snap.sources.append(
-            SkillSourceRecord(
-                id: id,
-                normalizedUrl: normalized,
-                branch: branch,
-                displayName: display,
-                cachePath: cache.path,
-                commitSHA: sha
+        do {
+            var snap = try SidecarStore.load(from: sidecarRoot)
+            snap.sources.removeAll { $0.id == id }
+            snap.sources.append(
+                SkillSourceRecord(
+                    id: id,
+                    normalizedUrl: normalized,
+                    branch: branch,
+                    displayName: display,
+                    cachePath: cache.path,
+                    commitSHA: sha
+                )
             )
-        )
-        try SidecarStore.save(snap, to: sidecarRoot)
+            try SidecarStore.save(snap, to: sidecarRoot)
+            try? fm.removeItem(at: backup)
+        } catch {
+            if committedNewCache {
+                try? fm.removeItem(at: cache)
+            }
+            if movedExistingCache {
+                try? fm.moveItem(at: backup, to: cache)
+            }
+            throw error
+        }
         return SkillSourceSummary(
             id: id,
             displayName: display,
@@ -122,15 +165,23 @@ public struct ControlPlane: Sendable {
     public func sourceDetail(id: String) -> SourceDetail? {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
         guard let source = snap.sources.first(where: { $0.id == id }) else { return nil }
-        let installedPaths = Set(
-            snap.logicalSkills.filter { $0.sourceId == source.id }.map(\.skillPathInRepo)
+        let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
+        let logicalByPath = Dictionary(
+            grouping: snap.logicalSkills.filter { $0.sourceId == source.id },
+            by: \.skillPathInRepo
         )
         let packages = discoverPackages(in: URL(fileURLWithPath: source.cachePath, isDirectory: true))
             .map {
-                SourcePackage(
+                let logicalIds = Set((logicalByPath[$0.path] ?? []).map(\.id))
+                let installedLocations = installedLocations(
+                    for: logicalIds,
+                    in: snap.locations,
+                    roots: roots
+                )
+                return SourcePackage(
                     pathInRepo: $0.path,
                     displayName: $0.name,
-                    installStatus: installedPaths.contains($0.path) ? .installed : .notInstalled
+                    installedLocations: installedLocations
                 )
             }
             .sorted { $0.pathInRepo < $1.pathInRepo }
@@ -143,6 +194,28 @@ public struct ControlPlane: Sendable {
             ),
             packages: packages
         )
+    }
+
+    private func installedLocations(
+        for logicalIds: Set<String>,
+        in locations: [LocationRecord],
+        roots: [String: SkillRootRecord]
+    ) -> [InstalledSkillLocation] {
+        locations.compactMap { location in
+            guard let logicalId = location.logicalSkillId,
+                  logicalIds.contains(logicalId)
+            else {
+                return nil
+            }
+            let root = roots[location.skillRootId]
+            return InstalledSkillLocation(
+                id: location.id,
+                onDiskPath: location.onDiskPath,
+                skillRootPath: root?.path ?? "",
+                adapterIds: root?.adapterIds ?? [],
+                scope: root?.scope ?? "global"
+            )
+        }.sorted { $0.onDiskPath < $1.onDiskPath }
     }
 
     public func availableInstallRoots() -> [InstallRootOption] {
@@ -814,11 +887,16 @@ public struct ControlPlane: Sendable {
         }
 
         var locations: [LocationRecord] = []
-        let previousByPath = Dictionary(uniqueKeysWithValues: previous.locations.map { ($0.onDiskPath, $0) })
+        var previousByPath: [String: LocationRecord] = [:]
+        for location in previous.locations {
+            previousByPath[canonicalPath(location.onDiskPath)] = location
+        }
         for root in rootByPath.values {
             for discovered in discoverSkills(in: root) {
-                if let old = previousByPath[discovered.onDiskPath] {
+                if let old = previousByPath[canonicalPath(discovered.onDiskPath)] {
                     var merged = discovered
+                    merged.id = old.id
+                    merged.onDiskPath = old.onDiskPath
                     merged.logicalSkillId = old.logicalSkillId
                     merged.appliedCommitSHA = old.appliedCommitSHA
                     merged.fileDigests = old.fileDigests
@@ -849,6 +927,10 @@ public struct ControlPlane: Sendable {
             detectedAdapterIds: detected.sorted(),
             inventoryChanged: changed
         )
+    }
+
+    private func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func detectAdapters() -> Set<String> {

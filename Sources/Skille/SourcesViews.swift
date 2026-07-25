@@ -75,18 +75,45 @@ struct SourceInspector: View {
             }
             Section("Packages") {
                 ForEach(detail.packages) { pkg in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(pkg.displayName)
-                                .font(.body.weight(.medium))
-                            Text(pkg.pathInRepo)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(pkg.installStatus == .notInstalled ? "Not installed" : "Installed")
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(pkg.displayName)
+                                    .font(.body.weight(.medium))
+                                Text(pkg.pathInRepo)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(
+                                pkg.installedLocations.isEmpty
+                                    ? "Not installed"
+                                    : "\(pkg.installedLocations.count) installed"
+                            )
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        }
+                        ForEach(pkg.installedLocations) { location in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(
+                                    systemName: location.scope == "project"
+                                        ? "folder"
+                                        : "person"
+                                )
+                                .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(location.onDiskPath)
+                                        .font(.caption.monospaced())
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(locationContext(location))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(locationAccessibilityLabel(location))
+                        }
                     }
                 }
             }
@@ -97,5 +124,17 @@ struct SourceInspector: View {
             }
         }
         .navigationTitle(detail.summary.displayName)
+    }
+
+    private func locationContext(_ location: InstalledSkillLocation) -> String {
+        let scope = location.scope == "project" ? "Project" : "User"
+        let agents = location.adapterIds.isEmpty
+            ? "Shared root"
+            : AdapterRegistry.displayNames(forAdapterIds: location.adapterIds)
+        return "\(scope) · \(agents)"
+    }
+
+    private func locationAccessibilityLabel(_ location: InstalledSkillLocation) -> String {
+        "Installed at \(location.onDiskPath), \(locationContext(location))"
     }
 }
