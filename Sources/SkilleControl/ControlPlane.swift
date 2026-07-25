@@ -20,17 +20,20 @@ public struct ScanResult: Equatable, Sendable {
 }
 
 /// Primary control-plane seam: UI and tests drive Skille through this API.
-/// Inject `sidecarRoot` and `homeDirectory` (temp dirs in tests).
+/// Inject `sidecarRoot`, `homeDirectory`, and `git` (temp dirs + FixtureGitFetch in tests).
 public struct ControlPlane: Sendable {
     public let sidecarRoot: URL
     public let homeDirectory: URL
+    private let git: any GitFetching
 
     public init(
         sidecarRoot: URL,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        git: any GitFetching = ProcessGitFetch()
     ) throws {
         self.sidecarRoot = sidecarRoot
         self.homeDirectory = homeDirectory
+        self.git = git
         try FileManager.default.createDirectory(
             at: sidecarRoot,
             withIntermediateDirectories: true
@@ -71,6 +74,82 @@ public struct ControlPlane: Sendable {
         var snap = try SidecarStore.load(from: sidecarRoot)
         snap.projects.removeAll { $0.id == id }
         try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
+    public func listSources() -> [SkillSourceSummary] {
+        let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        return snap.sources
+            .map {
+                SkillSourceSummary(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    normalizedUrl: $0.normalizedUrl,
+                    branch: $0.branch
+                )
+            }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    @discardableResult
+    public func addSource(url: String, branch: String = "main") throws -> SkillSourceSummary {
+        let normalized = Self.normalizeGitURL(url)
+        let id = stableID("src", "\(normalized)|\(branch)")
+        let cache = sidecarRoot
+            .appendingPathComponent("cache", isDirectory: true)
+            .appendingPathComponent(id.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
+        let sha = try git.fetch(url: normalized, branch: branch, into: cache)
+        let display = URL(string: normalized)?.deletingPathExtension().lastPathComponent
+            ?? normalized
+
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        snap.sources.removeAll { $0.id == id }
+        snap.sources.append(
+            SkillSourceRecord(
+                id: id,
+                normalizedUrl: normalized,
+                branch: branch,
+                displayName: display,
+                cachePath: cache.path,
+                commitSHA: sha
+            )
+        )
+        try SidecarStore.save(snap, to: sidecarRoot)
+        return SkillSourceSummary(
+            id: id,
+            displayName: display,
+            normalizedUrl: normalized,
+            branch: branch
+        )
+    }
+
+    public func sourceDetail(id: String) -> SourceDetail? {
+        let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        guard let source = snap.sources.first(where: { $0.id == id }) else { return nil }
+        let packages = discoverPackages(in: URL(fileURLWithPath: source.cachePath, isDirectory: true))
+            .map {
+                SourcePackage(
+                    pathInRepo: $0.path,
+                    displayName: $0.name,
+                    installStatus: .notInstalled
+                )
+            }
+            .sorted { $0.pathInRepo < $1.pathInRepo }
+        return SourceDetail(
+            summary: SkillSourceSummary(
+                id: source.id,
+                displayName: source.displayName,
+                normalizedUrl: source.normalizedUrl,
+                branch: source.branch
+            ),
+            packages: packages
+        )
+    }
+
+    public static func normalizeGitURL(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasSuffix(".git") { /* keep */ }
+        if s.hasSuffix("/") { s.removeLast() }
+        return s
     }
 
     public func skillDetail(id: String) -> SkillDetail? {
@@ -189,7 +268,8 @@ public struct ControlPlane: Sendable {
         let next = SidecarSnapshot(
             skillRoots: rootByPath.values.sorted { $0.path < $1.path },
             locations: locations,
-            projects: previous.projects
+            projects: previous.projects,
+            sources: previous.sources
         )
         let changed = next != previous
         try SidecarStore.save(next, to: sidecarRoot)
@@ -274,6 +354,35 @@ public struct ControlPlane: Sendable {
     private func stableID(_ prefix: String, _ path: String) -> String {
         "\(prefix):\(path)"
     }
+
+    private func discoverPackages(in root: URL) -> [(path: String, name: String)] {
+        var results: [(path: String, name: String)] = []
+        let fm = FileManager.default
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        for case let item as URL in enumerator {
+            guard item.lastPathComponent == "SKILL.md" else { continue }
+            let dir = item.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+            let dirPath = dir.path
+            let rel: String
+            if dirPath == rootPath {
+                rel = "."
+            } else if dirPath.hasPrefix(rootPath + "/") {
+                rel = String(dirPath.dropFirst(rootPath.count + 1))
+            } else {
+                rel = dir.lastPathComponent
+            }
+            let name = displayName(from: item, fallback: dir.lastPathComponent)
+            results.append((rel, name))
+        }
+        return results
+    }
 }
 
 public struct SkillSummary: Identifiable, Equatable, Sendable {
@@ -325,5 +434,47 @@ public struct SkillDetail: Equatable, Sendable {
     public init(summary: SkillSummary, locations: [LocationSummary]) {
         self.summary = summary
         self.locations = locations
+    }
+}
+
+public struct SkillSourceSummary: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let normalizedUrl: String
+    public let branch: String
+
+    public init(id: String, displayName: String, normalizedUrl: String, branch: String) {
+        self.id = id
+        self.displayName = displayName
+        self.normalizedUrl = normalizedUrl
+        self.branch = branch
+    }
+}
+
+public enum PackageInstallStatus: String, Equatable, Sendable {
+    case notInstalled
+    case installed
+}
+
+public struct SourcePackage: Identifiable, Equatable, Sendable {
+    public var id: String { pathInRepo }
+    public let pathInRepo: String
+    public let displayName: String
+    public let installStatus: PackageInstallStatus
+
+    public init(pathInRepo: String, displayName: String, installStatus: PackageInstallStatus) {
+        self.pathInRepo = pathInRepo
+        self.displayName = displayName
+        self.installStatus = installStatus
+    }
+}
+
+public struct SourceDetail: Equatable, Sendable {
+    public let summary: SkillSourceSummary
+    public let packages: [SourcePackage]
+
+    public init(summary: SkillSourceSummary, packages: [SourcePackage]) {
+        self.summary = summary
+        self.packages = packages
     }
 }
