@@ -93,11 +93,15 @@ struct SkillEditorView: View {
             case .text:
                 if showPreview && isMarkdown {
                     ScrollView {
-                        Text(markdownPreview)
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(Array(previewBlocks.enumerated()), id: \.offset) { _, block in
+                                previewBlock(block)
+                            }
+                        }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
-                            .textSelection(.enabled)
                     }
+                    .textSelection(.enabled)
                     .accessibilityLabel("Markdown preview")
                 } else {
                     TextEditor(text: $session.buffer)
@@ -121,8 +125,51 @@ struct SkillEditorView: View {
         (selected ?? "").lowercased().hasSuffix(".md")
     }
 
-    private var markdownPreview: AttributedString {
-        (try? AttributedString(markdown: session.buffer)) ?? AttributedString(session.buffer)
+    private var previewBlocks: [MarkdownPreview.Block] {
+        (try? MarkdownPreview.blocks(fromSkillMarkdown: session.buffer)) ?? []
+    }
+
+    @ViewBuilder
+    private func previewBlock(_ block: MarkdownPreview.Block) -> some View {
+        switch block.kind {
+        case .heading(let level):
+            Text(block.content)
+                .font(headingFont(level))
+                .fontWeight(.semibold)
+        case .paragraph:
+            Text(block.content)
+                .fixedSize(horizontal: false, vertical: true)
+        case .unorderedListItem:
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("•")
+                Text(block.content)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .orderedListItem(let ordinal):
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(ordinal).")
+                    .monospacedDigit()
+                Text(block.content)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .codeBlock:
+            ScrollView(.horizontal) {
+                Text(block.content)
+                    .font(.system(.body, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(10)
+            }
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .title
+        case 2: .title2
+        case 3: .title3
+        default: .headline
+        }
     }
 
     private var footerStatus: String? {

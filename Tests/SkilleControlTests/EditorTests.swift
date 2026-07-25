@@ -3,6 +3,49 @@ import Testing
 @testable import SkilleControl
 
 struct EditorTests {
+    @Test func skillMarkdownPreviewHidesFrontmatterAndKeepsBlockStructure() throws {
+        let source = """
+        ---
+        name: preview-check
+        description: Must never appear as body prose
+        ---
+        # Heading
+
+        A paragraph with **emphasis**, `inline code`, and [a link](https://example.com).
+
+        - First
+        - Second
+
+        1. Ordered
+
+        ```swift
+        print("block")
+        ```
+        """
+
+        let blocks = try MarkdownPreview.blocks(fromSkillMarkdown: source)
+
+        #expect(blocks.map(\.kind) == [
+            .heading(level: 1),
+            .paragraph,
+            .unorderedListItem,
+            .unorderedListItem,
+            .orderedListItem(ordinal: 1),
+            .codeBlock(language: "swift"),
+        ])
+        #expect(blocks.map { String($0.content.characters) } == [
+            "Heading",
+            "A paragraph with emphasis, inline code, and a link.",
+            "First",
+            "Second",
+            "Ordered",
+            "print(\"block\")\n",
+        ])
+        #expect(!blocks.map { String($0.content.characters) }.joined().contains("description:"))
+        #expect(blocks[1].content.runs.filter { $0.inlinePresentationIntent != nil }.count == 2)
+        #expect(blocks[1].content.runs.contains { $0.link?.absoluteString == "https://example.com" })
+    }
+
     @Test func dirtyNavigationRequiresSaveDiscardOrCancel() throws {
         let fixture = try TestFixture()
         defer { fixture.cleanup() }
