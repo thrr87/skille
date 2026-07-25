@@ -165,7 +165,7 @@ struct SkillsHome: View {
                 .navigationTitle("Skills")
             } detail: {
                 if let selection, let detail = controlPlane.skillDetail(id: selection) {
-                    SkillInspector(detail: detail)
+                    SkillInspector(detail: detail, controlPlane: controlPlane)
                 } else {
                     ContentUnavailableView(
                         "Select a skill",
@@ -180,6 +180,9 @@ struct SkillsHome: View {
 
 struct SkillInspector: View {
     let detail: SkillDetail
+    let controlPlane: ControlPlane
+    @State private var editorPath: String?
+    @State private var showLocationChooser = false
 
     var body: some View {
         List {
@@ -210,8 +213,7 @@ struct SkillInspector: View {
                 }
             }
             Section {
-                Button("Edit") {}
-                    .disabled(true)
+                Button("Edit") { startEdit() }
                 if detail.summary.isOrphan {
                     Button("Attach Source…") {}
                         .disabled(true)
@@ -222,12 +224,37 @@ struct SkillInspector: View {
             }
         }
         .navigationTitle(detail.summary.displayName)
+        .sheet(item: $editorPath) { path in
+            SkillEditorView(
+                controlPlane: controlPlane,
+                skillPath: path,
+                title: detail.summary.displayName
+            )
+        }
+        .confirmationDialog("Edit which location?", isPresented: $showLocationChooser) {
+            ForEach(detail.locations) { loc in
+                Button(loc.onDiskPath) { editorPath = loc.onDiskPath }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func startEdit() {
+        if detail.locations.count == 1 {
+            editorPath = detail.locations[0].onDiskPath
+        } else if detail.locations.count > 1 {
+            showLocationChooser = true
+        }
     }
 
     private func rootCaption(_ loc: LocationSummary) -> String {
         let adapters = loc.adapterIds.isEmpty ? "shared root" : loc.adapterIds.joined(separator: ", ")
         return "\(loc.skillRootPath) · \(adapters)"
     }
+}
+
+extension String: @retroactive Identifiable {
+    public var id: String { self }
 }
 
 struct SkillRow: View {
