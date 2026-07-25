@@ -18,6 +18,7 @@ struct LibraryShell: View {
     @State private var checklistSourceID: String?
     @State private var reviewQueue: [UpdateReview] = []
     @State private var activeReview: UpdateReview?
+    @State private var skillFilter = ""
 
     var body: some View {
         TabView(selection: $tab) {
@@ -31,10 +32,12 @@ struct LibraryShell: View {
             )
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
+                .accessibilityLabel("Sources tab")
             SkillsHome(
                 controlPlane: controlPlane,
-                skills: skills,
+                skills: filteredSkills,
                 selection: $selectedSkillID,
+                filter: $skillFilter,
                 onAddProject: { addProject() },
                 onAddSource: { showAddSource = true },
                 onInventoryChanged: {
@@ -44,19 +47,34 @@ struct LibraryShell: View {
             )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
+                .accessibilityLabel("Skills tab")
             ProjectsTab(controlPlane: controlPlane, onChanged: { runScan(manual: true) })
                 .tabItem { Label("Projects", systemImage: "folder") }
                 .tag(LibraryTab.projects)
+                .accessibilityLabel("Projects tab")
         }
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
             ToolbarItemGroup {
                 Button("Scan") { runScan(manual: true) }
+                    .keyboardShortcut("r", modifiers: [.command])
                     .disabled(isScanning)
+                    .accessibilityLabel("Scan skill roots")
                 Button("Add Source") { showAddSource = true }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .accessibilityLabel("Add skill source")
                 Button("New Skill") { showNewSkill = true }
+                    .keyboardShortcut("n", modifiers: [.command])
+                    .accessibilityLabel("Create new skill")
             }
         }
+        .background(
+            Group {
+                Button("") { tab = .sources }.keyboardShortcut("1", modifiers: [.command]).opacity(0)
+                Button("") { tab = .skills }.keyboardShortcut("2", modifiers: [.command]).opacity(0)
+                Button("") { tab = .projects }.keyboardShortcut("3", modifiers: [.command]).opacity(0)
+            }
+        )
         .sheet(isPresented: $showAddSource) {
             AddSourceSheet { url, branch in
                 addSource(url: url, branch: branch)
@@ -110,9 +128,16 @@ struct LibraryShell: View {
                     .background(.regularMaterial, in: Capsule())
                     .padding(.bottom, 20)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .task { runScan(manual: false) }
+    }
+
+    private var filteredSkills: [SkillSummary] {
+        let query = skillFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return skills }
+        return skills.filter { $0.displayName.localizedCaseInsensitiveContains(query) }
     }
 
     private func runScan(manual: Bool) {
@@ -186,20 +211,27 @@ struct SkillsHome: View {
     let controlPlane: ControlPlane
     let skills: [SkillSummary]
     @Binding var selection: String?
+    @Binding var filter: String
     var onAddProject: () -> Void = {}
     var onAddSource: () -> Void = {}
     var onInventoryChanged: () -> Void = {}
 
     var body: some View {
-        if skills.isEmpty {
+        if skills.isEmpty && filter.isEmpty {
             SkillsEmptyState(onAddProject: onAddProject, onAddSource: onAddSource)
         } else {
             NavigationSplitView {
                 List(skills, selection: $selection) { skill in
                     SkillRow(skill: skill)
                         .tag(skill.id)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(skillAccessibilityLabel(skill))
+                        .accessibilityHint("Shows skill contents in the detail pane")
                 }
                 .navigationTitle("Skills")
+                .searchable(text: $filter, prompt: "Filter skills")
+                .accessibilityLabel("Skills list")
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
             } detail: {
                 if let selection, let detail = controlPlane.skillDetail(id: selection) {
                     SkillInspector(
@@ -209,13 +241,31 @@ struct SkillsHome: View {
                     )
                 } else {
                     ContentUnavailableView(
-                        "Select a skill",
+                        filter.isEmpty ? "Select a skill" : "No matching skills",
                         systemImage: "square.stack.3d.up",
-                        description: Text("Locations and actions appear here.")
+                        description: Text(
+                            filter.isEmpty
+                                ? "SKILL.md opens here for reading and editing."
+                                : "Try a different filter."
+                        )
                     )
                 }
             }
         }
+    }
+
+    private func skillAccessibilityLabel(_ skill: SkillSummary) -> String {
+        var parts = [skill.displayName]
+        if !skill.adapterIds.isEmpty {
+            parts.append("used by \(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))")
+        }
+        if skill.isOrphan { parts.append("no git source") }
+        if skill.hasUpdate { parts.append("update available") }
+        if skill.isDirty { parts.append("local edits") }
+        if skill.locationCount > 1 {
+            parts.append("\(skill.locationCount) on-disk locations")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -223,58 +273,35 @@ struct SkillInspector: View {
     let detail: SkillDetail
     let controlPlane: ControlPlane
     var onInventoryChanged: () -> Void = {}
-    @State private var editorPath: String?
-    @State private var showLocationChooser = false
+
+    @State private var activeLocationPath: String?
     @State private var reviewLocationId: String?
     @State private var updateChooser = false
     @State private var showAttachSource = false
 
     var body: some View {
-        List {
-            Section {
-                LabeledContent("Name", value: detail.summary.displayName)
-                LabeledContent("Locations", value: "\(detail.summary.locationCount)")
-                if detail.summary.isOrphan {
-                    LabeledContent("Status", value: "Orphan")
-                }
-                if detail.summary.hasUpdate {
-                    LabeledContent("Update", value: "Available")
-                }
-                if detail.summary.isDirty {
-                    LabeledContent("Dirty", value: "Local edits")
-                }
-            }
-            Section("Locations") {
-                ForEach(detail.locations) { loc in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(loc.onDiskPath)
-                            .font(.body.monospaced())
-                            .textSelection(.enabled)
-                        Text(rootCaption(loc))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-            Section {
-                Button("Edit") { startEdit() }
-                if detail.summary.isOrphan {
-                    Button("Attach Source…") { showAttachSource = true }
-                } else {
-                    Button("Update…") { startUpdate() }
-                        .disabled(!detail.summary.hasUpdate && !detail.summary.isDirty)
-                }
+        VStack(spacing: 0) {
+            inspectorHeader
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.bar)
+            Divider()
+            if let path = resolvedLocationPath {
+                SkillEditorView(
+                    controlPlane: controlPlane,
+                    skillPath: path,
+                    title: detail.summary.displayName,
+                    onSaved: onInventoryChanged
+                )
+            } else {
+                ContentUnavailableView(
+                    "No location",
+                    systemImage: "folder",
+                    description: Text("This skill has no on-disk location.")
+                )
             }
         }
         .navigationTitle(detail.summary.displayName)
-        .sheet(item: $editorPath) { path in
-            SkillEditorView(
-                controlPlane: controlPlane,
-                skillPath: path,
-                title: detail.summary.displayName
-            )
-        }
         .sheet(isPresented: $showAttachSource) {
             AttachSourceSheet(
                 controlPlane: controlPlane,
@@ -298,25 +325,101 @@ struct SkillInspector: View {
                 }
             }
         }
-        .confirmationDialog("Edit which location?", isPresented: $showLocationChooser) {
-            ForEach(detail.locations) { loc in
-                Button(loc.onDiskPath) { editorPath = loc.onDiskPath }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
         .confirmationDialog("Update which location?", isPresented: $updateChooser) {
             ForEach(detail.locations) { loc in
                 Button(loc.onDiskPath) { reviewLocationId = loc.id }
             }
             Button("Cancel", role: .cancel) {}
         }
+        .onAppear { syncActiveLocation() }
+        .onChange(of: detail.summary.id) { _, _ in syncActiveLocation() }
     }
 
-    private func startEdit() {
-        if detail.locations.count == 1 {
-            editorPath = detail.locations[0].onDiskPath
-        } else if detail.locations.count > 1 {
-            showLocationChooser = true
+    private var resolvedLocationPath: String? {
+        if let activeLocationPath,
+           detail.locations.contains(where: { $0.onDiskPath == activeLocationPath })
+        {
+            return activeLocationPath
+        }
+        return detail.locations.first?.onDiskPath
+    }
+
+    private var inspectorHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(detail.summary.displayName)
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                if detail.summary.isOrphan {
+                    Button("Attach Source…") { showAttachSource = true }
+                        .controlSize(.small)
+                        .keyboardShortcut("a", modifiers: [.command, .shift])
+                        .help("Link a git URL so Skille can check for updates")
+                } else {
+                    Button("Update…") { startUpdate() }
+                        .controlSize(.small)
+                        .disabled(!detail.summary.hasUpdate && !detail.summary.isDirty)
+                        .keyboardShortcut("u", modifiers: [.command, .shift])
+                }
+            }
+
+            if !detail.summary.adapterIds.isEmpty {
+                Text("Used by \(AdapterRegistry.displayNames(forAdapterIds: detail.summary.adapterIds))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(
+                        "Used by \(AdapterRegistry.displayNames(forAdapterIds: detail.summary.adapterIds))"
+                    )
+            }
+
+            HStack(spacing: 6) {
+                if detail.summary.isOrphan {
+                    Text("No source")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("Discovered on disk without a tracked git source. Attach Source to enable updates.")
+                }
+                if detail.summary.hasUpdate {
+                    Text("Update").font(.caption2).foregroundStyle(.orange)
+                }
+                if detail.summary.isDirty {
+                    Text("Dirty").font(.caption2).foregroundStyle(.red)
+                }
+                if detail.locations.count > 1 {
+                    Picker("Location", selection: locationSelection) {
+                        ForEach(detail.locations) { loc in
+                            Text(shortLocationLabel(loc)).tag(Optional(loc.onDiskPath))
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityLabel("Skill location")
+                } else if let loc = detail.locations.first {
+                    Text(loc.onDiskPath)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("On disk path \(loc.onDiskPath)")
+                }
+            }
+        }
+    }
+
+    private var locationSelection: Binding<String?> {
+        Binding(
+            get: { resolvedLocationPath },
+            set: { activeLocationPath = $0 }
+        )
+    }
+
+    private func syncActiveLocation() {
+        if activeLocationPath == nil
+            || !detail.locations.contains(where: { $0.onDiskPath == activeLocationPath })
+        {
+            activeLocationPath = detail.locations.first?.onDiskPath
         }
     }
 
@@ -328,14 +431,12 @@ struct SkillInspector: View {
         }
     }
 
-    private func rootCaption(_ loc: LocationSummary) -> String {
-        let adapters = loc.adapterIds.isEmpty ? "shared root" : loc.adapterIds.joined(separator: ", ")
-        return "\(loc.skillRootPath) · \(adapters)"
+    private func shortLocationLabel(_ loc: LocationSummary) -> String {
+        let adapters = loc.adapterIds.isEmpty
+            ? "shared root"
+            : AdapterRegistry.displayNames(forAdapterIds: loc.adapterIds)
+        return "\(loc.onDiskPath) · \(adapters)"
     }
-}
-
-extension String: @retroactive Identifiable {
-    public var id: String { self }
 }
 
 extension UpdateReview: Identifiable {
@@ -350,11 +451,21 @@ struct SkillRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(skill.displayName)
                     .font(.body.weight(.medium))
+                if !skill.adapterIds.isEmpty {
+                    Text(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if skill.isOrphan {
+                    Text("No source")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 6) {
-                    if skill.isOrphan {
-                        Text("Orphan")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if skill.isOrphan && !skill.adapterIds.isEmpty {
+                        Text("No source")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                     if skill.isFromProject {
                         Text("Project")
@@ -379,13 +490,26 @@ struct SkillRow: View {
                     }
                 }
             }
-            Spacer()
-            Text("\(skill.locationCount)")
-                .font(.caption.monospacedDigit())
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.15), in: Capsule())
-                .accessibilityLabel("\(skill.locationCount) locations")
+            Spacer(minLength: 4)
+            if skill.locationCount > 1 {
+                Text("\(skill.locationCount)")
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                    .help("\(skill.locationCount) on-disk copies")
+                    .accessibilityLabel("\(skill.locationCount) on-disk locations")
+            } else if !skill.adapterIds.isEmpty {
+                Text("\(skill.adapterIds.count)")
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                    .help(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))
+                    .accessibilityLabel(
+                        "\(skill.adapterIds.count) agents: \(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))"
+                    )
+            }
         }
         .padding(.vertical, 2)
     }
@@ -400,6 +524,7 @@ struct SkillsEmptyState: View {
             Image(systemName: "square.stack.3d.up.slash")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             VStack(spacing: 8) {
                 Text("No skills yet")
                     .font(.title2.weight(.semibold))

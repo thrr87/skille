@@ -166,6 +166,8 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
     public let hasUpdate: Bool
     public let isDirty: Bool
     public let isFromProject: Bool
+    /// Detected agents that load at least one of this skill's roots.
+    public let adapterIds: [String]
 
     public init(
         id: String,
@@ -174,7 +176,8 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         isOrphan: Bool = true,
         hasUpdate: Bool = false,
         isDirty: Bool = false,
-        isFromProject: Bool = false
+        isFromProject: Bool = false,
+        adapterIds: [String] = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -183,6 +186,7 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         self.hasUpdate = hasUpdate
         self.isDirty = isDirty
         self.isFromProject = isFromProject
+        self.adapterIds = adapterIds
     }
 }
 

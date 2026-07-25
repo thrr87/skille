@@ -23,6 +23,8 @@ struct SkillsInspectorTests {
         #expect(detail.locations[0].onDiskPath.hasSuffix("/.cursor/skills/inspect-me"))
         #expect(detail.summary.locationCount == detail.locations.count)
         #expect(detail.summary.isOrphan == true)
+        #expect(detail.summary.adapterIds.contains("cursor"))
+        #expect(detail.locations[0].adapterIds.contains("cursor"))
     }
 
     @Test func skillDetailClearsAfterRescanRemovesSkill() throws {

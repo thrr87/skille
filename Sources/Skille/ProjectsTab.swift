@@ -8,33 +8,40 @@ struct ProjectsTab: View {
     @State private var projects: [ProjectRecord] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Projects")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                Button("Add…") { add() }
-            }
-            .padding(16)
-            if projects.isEmpty {
-                ContentUnavailableView(
-                    "No projects",
-                    systemImage: "folder",
-                    description: Text("Add a project folder to include its skill roots in Scan.")
-                )
-            } else {
-                List {
-                    ForEach(projects) { project in
-                        HStack {
-                            Text(project.rootPath)
-                                .font(.body.monospaced())
-                                .textSelection(.enabled)
-                            Spacer()
-                            Button("Remove", role: .destructive) {
-                                remove(project)
+        NavigationStack {
+            Group {
+                if projects.isEmpty {
+                    ContentUnavailableView {
+                        Label("No projects", systemImage: "folder")
+                    } description: {
+                        Text("Add a project folder to include its skill roots in Scan.")
+                    } actions: {
+                        Button("Add Project…", action: add)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(projects) { project in
+                            HStack {
+                                Text(project.rootPath)
+                                    .font(.body.monospaced())
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button("Remove", role: .destructive) {
+                                    remove(project)
+                                }
                             }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(project.rootPath)
                         }
                     }
+                }
+            }
+            .navigationTitle("Projects")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add…", action: add)
+                        .accessibilityLabel("Add project")
                 }
             }
         }
