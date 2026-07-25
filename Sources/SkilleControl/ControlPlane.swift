@@ -441,6 +441,159 @@ public struct ControlPlane: Sendable {
         return UpdateCheckResult(updatesFound: updates, dirtyFound: dirty)
     }
 
+    public func prepareUpdateReview(locationId: String) throws -> UpdateReview {
+        let snap = try SidecarStore.load(from: sidecarRoot)
+        guard let loc = snap.locations.first(where: { $0.id == locationId }) else {
+            throw UpdateReviewError.locationNotFound
+        }
+        guard let logicalId = loc.logicalSkillId,
+              let logical = snap.logicalSkills.first(where: { $0.id == logicalId }),
+              let source = snap.sources.first(where: { $0.id == logical.sourceId })
+        else {
+            throw UpdateReviewError.noProvenance
+        }
+
+        let remoteRoot = URL(fileURLWithPath: source.cachePath, isDirectory: true)
+            .appendingPathComponent(logical.skillPathInRepo, isDirectory: true)
+        let localRoot = URL(fileURLWithPath: loc.onDiskPath, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: remoteRoot.path) else {
+            throw UpdateReviewError.remoteMissing
+        }
+
+        let files = try Self.diffTrees(local: localRoot, remote: remoteRoot)
+        return UpdateReview(
+            locationId: locationId,
+            displayName: loc.displayName,
+            onDiskPath: loc.onDiskPath,
+            proposedCommitSHA: source.commitSHA,
+            appliedCommitSHA: loc.appliedCommitSHA,
+            isDirty: Self.isDirty(loc),
+            files: files
+        )
+    }
+
+    public func acceptUpdate(locationId: String, discardLocal: Bool) throws {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        guard let index = snap.locations.firstIndex(where: { $0.id == locationId }) else {
+            throw UpdateReviewError.locationNotFound
+        }
+        var loc = snap.locations[index]
+        guard let logicalId = loc.logicalSkillId,
+              let logical = snap.logicalSkills.first(where: { $0.id == logicalId }),
+              let source = snap.sources.first(where: { $0.id == logical.sourceId })
+        else {
+            throw UpdateReviewError.noProvenance
+        }
+
+        if Self.isDirty(loc) && !discardLocal {
+            throw UpdateReviewError.dirtyRequiresDiscard
+        }
+
+        let remoteRoot = URL(fileURLWithPath: source.cachePath, isDirectory: true)
+            .appendingPathComponent(logical.skillPathInRepo, isDirectory: true)
+        let localRoot = URL(fileURLWithPath: loc.onDiskPath, isDirectory: true)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: localRoot.path) {
+            try fm.removeItem(at: localRoot)
+        }
+        try fm.createDirectory(at: localRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.copyItem(at: remoteRoot, to: localRoot)
+
+        loc.appliedCommitSHA = source.commitSHA
+        loc.fileDigests = try Self.fileDigests(ofTree: localRoot)
+        snap.locations[index] = loc
+        try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
+    public func rejectUpdate(locationId: String) throws {
+        let snap = try SidecarStore.load(from: sidecarRoot)
+        guard snap.locations.contains(where: { $0.id == locationId }) else {
+            throw UpdateReviewError.locationNotFound
+        }
+        // No disk or last-applied changes.
+    }
+
+    public static func diffTrees(local: URL, remote: URL) throws -> [UpdateFileChange] {
+        let localDigests = Dictionary(
+            uniqueKeysWithValues: (try fileDigests(ofTree: local)).map { ($0.relPath, $0) }
+        )
+        let remoteDigests = Dictionary(
+            uniqueKeysWithValues: (try fileDigests(ofTree: remote)).map { ($0.relPath, $0) }
+        )
+        let allPaths = Set(localDigests.keys).union(remoteDigests.keys).sorted()
+        var changes: [UpdateFileChange] = []
+
+        for path in allPaths {
+            let localHash = localDigests[path]?.sha256
+            let remoteHash = remoteDigests[path]?.sha256
+            if localHash == remoteHash { continue }
+
+            let status: UpdateFileStatus
+            if localHash == nil { status = .added }
+            else if remoteHash == nil { status = .deleted }
+            else { status = .modified }
+
+            let localURL = local.appendingPathComponent(path)
+            let remoteURL = remote.appendingPathComponent(path)
+            let localIsText = FileManager.default.fileExists(atPath: localURL.path)
+                ? looksLikeText(url: localURL) : true
+            let remoteIsText = FileManager.default.fileExists(atPath: remoteURL.path)
+                ? looksLikeText(url: remoteURL) : true
+            let isText = localIsText && remoteIsText
+
+            var textDiff: String?
+            var oldSize: Int?
+            var newSize: Int?
+
+            if isText {
+                let oldText = (try? String(contentsOf: localURL, encoding: .utf8)) ?? ""
+                let newText = (try? String(contentsOf: remoteURL, encoding: .utf8)) ?? ""
+                textDiff = Self.unifiedDiff(old: oldText, new: newText, path: path)
+            } else {
+                oldSize = fileSize(localURL)
+                newSize = fileSize(remoteURL)
+            }
+
+            changes.append(
+                UpdateFileChange(
+                    relativePath: path,
+                    status: status,
+                    textDiff: textDiff,
+                    oldByteSize: oldSize,
+                    newByteSize: newSize
+                )
+            )
+        }
+        return changes
+    }
+
+    private static func fileSize(_ url: URL) -> Int? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber
+        else { return nil }
+        return size.intValue
+    }
+
+    private static func unifiedDiff(old: String, new: String, path: String) -> String {
+        // ponytail: line-oriented mini diff; upgrade to lib if review UX needs hunks
+        let oldLines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let newLines = new.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var out = "--- a/\(path)\n+++ b/\(path)\n"
+        let maxCount = max(oldLines.count, newLines.count)
+        for i in 0..<maxCount {
+            let o = i < oldLines.count ? oldLines[i] : nil
+            let n = i < newLines.count ? newLines[i] : nil
+            if o == n, let o {
+                out += " \(o)\n"
+            } else {
+                if let o { out += "-\(o)\n" }
+                if let n { out += "+\(n)\n" }
+            }
+        }
+        return out
+    }
+
     @discardableResult
     public func scan() throws -> ScanResult {
         let previous = try SidecarStore.load(from: sidecarRoot)
@@ -772,6 +925,70 @@ public enum InstallError: Error, Equatable {
 public enum AuthoringError: Error, Equatable {
     case invalidName
     case alreadyExists(String)
+}
+
+public enum UpdateReviewError: Error, Equatable {
+    case locationNotFound
+    case noProvenance
+    case remoteMissing
+    case dirtyRequiresDiscard
+}
+
+public enum UpdateFileStatus: String, Equatable, Sendable {
+    case added
+    case modified
+    case deleted
+}
+
+public struct UpdateFileChange: Identifiable, Equatable, Sendable {
+    public var id: String { relativePath }
+    public let relativePath: String
+    public let status: UpdateFileStatus
+    public let textDiff: String?
+    public let oldByteSize: Int?
+    public let newByteSize: Int?
+
+    public init(
+        relativePath: String,
+        status: UpdateFileStatus,
+        textDiff: String?,
+        oldByteSize: Int?,
+        newByteSize: Int?
+    ) {
+        self.relativePath = relativePath
+        self.status = status
+        self.textDiff = textDiff
+        self.oldByteSize = oldByteSize
+        self.newByteSize = newByteSize
+    }
+}
+
+public struct UpdateReview: Equatable, Sendable {
+    public let locationId: String
+    public let displayName: String
+    public let onDiskPath: String
+    public let proposedCommitSHA: String
+    public let appliedCommitSHA: String?
+    public let isDirty: Bool
+    public let files: [UpdateFileChange]
+
+    public init(
+        locationId: String,
+        displayName: String,
+        onDiskPath: String,
+        proposedCommitSHA: String,
+        appliedCommitSHA: String?,
+        isDirty: Bool,
+        files: [UpdateFileChange]
+    ) {
+        self.locationId = locationId
+        self.displayName = displayName
+        self.onDiskPath = onDiskPath
+        self.proposedCommitSHA = proposedCommitSHA
+        self.appliedCommitSHA = appliedCommitSHA
+        self.isDirty = isDirty
+        self.files = files
+    }
 }
 
 public enum EditorError: Error, Equatable {

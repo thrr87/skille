@@ -172,7 +172,14 @@ struct SkillsHome: View {
                 .navigationTitle("Skills")
             } detail: {
                 if let selection, let detail = controlPlane.skillDetail(id: selection) {
-                    SkillInspector(detail: detail, controlPlane: controlPlane)
+                    SkillInspector(
+                        detail: detail,
+                        controlPlane: controlPlane,
+                        onInventoryChanged: {
+                            skills = controlPlane.listSkills()
+                            sources = controlPlane.listSources()
+                        }
+                    )
                 } else {
                     ContentUnavailableView(
                         "Select a skill",
@@ -188,8 +195,11 @@ struct SkillsHome: View {
 struct SkillInspector: View {
     let detail: SkillDetail
     let controlPlane: ControlPlane
+    var onInventoryChanged: () -> Void = {}
     @State private var editorPath: String?
     @State private var showLocationChooser = false
+    @State private var reviewLocationId: String?
+    @State private var updateChooser = false
 
     var body: some View {
         List {
@@ -225,8 +235,8 @@ struct SkillInspector: View {
                     Button("Attach Source…") {}
                         .disabled(true)
                 } else {
-                    Button("Update…") {}
-                        .disabled(true)
+                    Button("Update…") { startUpdate() }
+                        .disabled(!detail.summary.hasUpdate && !detail.summary.isDirty)
                 }
             }
         }
@@ -238,9 +248,27 @@ struct SkillInspector: View {
                 title: detail.summary.displayName
             )
         }
+        .sheet(isPresented: Binding(
+            get: { reviewLocationId != nil },
+            set: { if !$0 { reviewLocationId = nil } }
+        )) {
+            if let reviewLocationId,
+               let review = try? controlPlane.prepareUpdateReview(locationId: reviewLocationId)
+            {
+                UpdateReviewSheet(controlPlane: controlPlane, review: review) {
+                    onInventoryChanged()
+                }
+            }
+        }
         .confirmationDialog("Edit which location?", isPresented: $showLocationChooser) {
             ForEach(detail.locations) { loc in
                 Button(loc.onDiskPath) { editorPath = loc.onDiskPath }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Update which location?", isPresented: $updateChooser) {
+            ForEach(detail.locations) { loc in
+                Button(loc.onDiskPath) { reviewLocationId = loc.id }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -251,6 +279,14 @@ struct SkillInspector: View {
             editorPath = detail.locations[0].onDiskPath
         } else if detail.locations.count > 1 {
             showLocationChooser = true
+        }
+    }
+
+    private func startUpdate() {
+        if detail.locations.count == 1 {
+            reviewLocationId = detail.locations[0].id
+        } else if detail.locations.count > 1 {
+            updateChooser = true
         }
     }
 
