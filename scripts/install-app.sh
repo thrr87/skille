@@ -8,6 +8,13 @@ if [[ "${1-}" != "" ]]; then
 else
   DEST="$HOME/Applications/Skille.app"
 fi
+case "$DEST" in
+  /*.app) ;;
+  *)
+    echo "error: destination must be an absolute path ending in .app" >&2
+    exit 2
+    ;;
+esac
 BUILD_DIR="$ROOT/.build/release"
 STAGE="$ROOT/.build/Skille.app"
 
