@@ -32,7 +32,11 @@ struct LibraryShell: View {
                 skills: skills,
                 selection: $selectedSkillID,
                 onAddProject: { addProject() },
-                onAddSource: { showAddSource = true }
+                onAddSource: { showAddSource = true },
+                onInventoryChanged: {
+                    skills = controlPlane.listSkills()
+                    sources = controlPlane.listSources()
+                }
             )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
@@ -159,6 +163,7 @@ struct SkillsHome: View {
     @Binding var selection: String?
     var onAddProject: () -> Void = {}
     var onAddSource: () -> Void = {}
+    var onInventoryChanged: () -> Void = {}
 
     var body: some View {
         if skills.isEmpty {
@@ -175,10 +180,7 @@ struct SkillsHome: View {
                     SkillInspector(
                         detail: detail,
                         controlPlane: controlPlane,
-                        onInventoryChanged: {
-                            skills = controlPlane.listSkills()
-                            sources = controlPlane.listSources()
-                        }
+                        onInventoryChanged: onInventoryChanged
                     )
                 } else {
                     ContentUnavailableView(
