@@ -138,27 +138,65 @@ public struct ControlPlane: Sendable {
 
     public func availableInstallRoots() -> [InstallRootOption] {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
-        // Prefer existing scanned roots; ensure ~/.agents/skills is offered when any adapter supports it.
-        var options: [InstallRootOption] = snap.skillRoots
-            .filter { $0.scope == "global" }
-            .map {
-                InstallRootOption(
-                    id: $0.id,
-                    path: $0.path,
-                    isDefaultSuggestion: $0.path.hasSuffix("/.agents/skills")
-                )
-            }
-        let agentsPath = homeDirectory.appendingPathComponent(".agents/skills", isDirectory: true).path
-        if !options.contains(where: { $0.path == agentsPath }) {
-            let id = stableID("root", agentsPath)
-            options.append(
-                InstallRootOption(id: id, path: agentsPath, isDefaultSuggestion: true)
+        return writableRootRecords(in: snap).map { root in
+            InstallRootOption(
+                id: root.id,
+                path: root.path,
+                isDefaultSuggestion: root.scope == "global"
+                    && root.path.hasSuffix("/.agents/skills"),
+                adapterIds: root.adapterIds,
+                scope: root.scope
             )
-        }
-        return options.sorted {
+        }.sorted {
             if $0.isDefaultSuggestion != $1.isDefaultSuggestion { return $0.isDefaultSuggestion }
+            if $0.scope != $1.scope { return $0.scope < $1.scope }
             return $0.path < $1.path
         }
+    }
+
+    private func writableRootRecords(in snap: SidecarSnapshot) -> [SkillRootRecord] {
+        let detected = detectAdapters()
+        var rootsByPath: [String: SkillRootRecord] = [:]
+
+        func add(path: String, adapterId: String, scope: String, projectId: String? = nil) {
+            if var root = rootsByPath[path] {
+                if !root.adapterIds.contains(adapterId) {
+                    root.adapterIds.append(adapterId)
+                    root.adapterIds.sort()
+                    rootsByPath[path] = root
+                }
+            } else {
+                rootsByPath[path] = SkillRootRecord(
+                    id: stableID("root", path),
+                    adapterIds: [adapterId],
+                    path: path,
+                    scope: scope,
+                    projectId: projectId
+                )
+            }
+        }
+
+        for adapter in AdapterRegistry.v1 where detected.contains(adapter.id) {
+            for relative in adapter.writableGlobalSkillRoots {
+                let path = homeDirectory.appendingPathComponent(relative, isDirectory: true).path
+                add(path: path, adapterId: adapter.id, scope: "global")
+            }
+            for project in snap.projects {
+                for relative in adapter.writableProjectSkillRoots {
+                    let path = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+                        .appendingPathComponent(relative, isDirectory: true)
+                        .path
+                    add(
+                        path: path,
+                        adapterId: adapter.id,
+                        scope: "project",
+                        projectId: project.id
+                    )
+                }
+            }
+        }
+
+        return rootsByPath.values.sorted { $0.path < $1.path }
     }
 
     public func install(
@@ -664,7 +702,9 @@ public struct ControlPlane: Sendable {
             let byDetect = adapter.detectRelativePaths.contains {
                 fm.fileExists(atPath: homeDirectory.appendingPathComponent($0).path)
             }
-            let byRoot = adapter.globalSkillRoots.contains {
+            let byRoot = adapter.globalSkillRoots
+                .filter { $0 != ".agents/skills" }
+                .contains {
                 fm.fileExists(atPath: homeDirectory.appendingPathComponent($0).path)
             }
             if byDetect || byRoot {
@@ -796,19 +836,18 @@ public struct ControlPlane: Sendable {
     }
 
     private func resolveRootPath(_ rootId: String, into snap: inout SidecarSnapshot) throws -> String {
+        guard let root = writableRootRecords(in: snap).first(where: { $0.id == rootId }) else {
+            throw InstallError.rootNotFound(rootId)
+        }
         if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
             return existing.path
         }
-        let agentsPath = homeDirectory.appendingPathComponent(".agents/skills").path
-        guard rootId == stableID("root", agentsPath) else {
-            throw InstallError.rootNotFound(rootId)
-        }
         try FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: agentsPath, isDirectory: true),
+            at: URL(fileURLWithPath: root.path, isDirectory: true),
             withIntermediateDirectories: true
         )
-        snap.skillRoots.append(SkillRootRecord(id: rootId, adapterIds: [], path: agentsPath))
-        return agentsPath
+        snap.skillRoots.append(root)
+        return root.path
     }
 
     private func discoverPackages(in root: URL) -> [(path: String, name: String)] {
@@ -854,4 +893,3 @@ public struct ControlPlane: Sendable {
         try SkillTreeIO.absoluteFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
     }
 }
-

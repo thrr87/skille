@@ -126,6 +126,50 @@ struct ScanTests {
         #expect(names.contains("thermo-nuclear-code-quality-review"))
     }
 
+    @Test func scanOnlyRootsRemainDiscoverableButAreNeverWritableTargets() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".codex"),
+            withIntermediateDirectories: true
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".cursor/plugins/cache/vendor/tool/1/skills",
+            name: "plugin-skill",
+            body: "# Plugin\n"
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".cursor/skills-cursor",
+            name: "built-in",
+            body: "# Built-in\n"
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".codex/skills",
+            name: "legacy",
+            body: "# Legacy\n"
+        )
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home
+        )
+        _ = try plane.scan()
+
+        #expect(Set(plane.listSkills().map(\.displayName)) == ["plugin-skill", "built-in", "legacy"])
+
+        let writable = plane.availableInstallRoots()
+        #expect(writable.contains { $0.path.hasSuffix("/.agents/skills") && $0.isDefaultSuggestion })
+        #expect(writable.contains { $0.path.hasSuffix("/.cursor/skills") })
+        #expect(!writable.contains { $0.path.contains("/plugins/") })
+        #expect(!writable.contains { $0.path.hasSuffix("/.cursor/skills-cursor") })
+        #expect(!writable.contains { $0.path.hasSuffix("/.codex/skills") })
+    }
+
     @Test func sharedAgentsRootAttributesMultipleAdapters() throws {
         let fixture = try TestFixture()
         defer { fixture.cleanup() }

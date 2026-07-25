@@ -96,4 +96,52 @@ struct InstallTests {
         #expect(skills[0].locationCount == 2)
         #expect(skills[0].isOrphan == false)
     }
+
+    @Test func writableRootOptionsCreateMissingGlobalAndProjectRoots() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        let repo = fixture.root.appendingPathComponent("src", isDirectory: true)
+        let package = repo.appendingPathComponent("one", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try "# one\n".write(
+            to: package.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        let project = fixture.root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home,
+            git: FixtureGitFetch(fixtureRoot: repo)
+        )
+        try plane.addProject(path: project.path)
+        let source = try plane.addSource(url: "https://example.com/one.git")
+        _ = try plane.scan()
+
+        let roots = plane.availableInstallRoots()
+        let globalPath = fixture.home.appendingPathComponent(".cursor/skills").path
+        let projectPath = project.appendingPathComponent(".cursor/skills").path
+        let global = try #require(roots.first { $0.path == globalPath })
+        let scoped = try #require(roots.first { $0.path == projectPath })
+        #expect(global.scope == "global")
+        #expect(global.adapterIds == ["cursor"])
+        #expect(scoped.scope == "project")
+        #expect(scoped.adapterIds == ["cursor"])
+
+        try plane.install(
+            sourceId: source.id,
+            packagePaths: ["one"],
+            skillRootIds: [global.id, scoped.id]
+        )
+
+        #expect(FileManager.default.fileExists(atPath: "\(globalPath)/one/SKILL.md"))
+        #expect(FileManager.default.fileExists(atPath: "\(projectPath)/one/SKILL.md"))
+    }
 }
