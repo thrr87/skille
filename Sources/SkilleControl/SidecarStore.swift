@@ -28,19 +28,49 @@ public struct LocationRecord: Codable, Equatable, Sendable, Identifiable {
     public var onDiskPath: String
     public var displayName: String
     public var logicalSkillId: String?
+    public var appliedCommitSHA: String?
+    public var fileDigests: [FileDigestRecord]
 
     public init(
         id: String,
         skillRootId: String,
         onDiskPath: String,
         displayName: String,
-        logicalSkillId: String? = nil
+        logicalSkillId: String? = nil,
+        appliedCommitSHA: String? = nil,
+        fileDigests: [FileDigestRecord] = []
     ) {
         self.id = id
         self.skillRootId = skillRootId
         self.onDiskPath = onDiskPath
         self.displayName = displayName
         self.logicalSkillId = logicalSkillId
+        self.appliedCommitSHA = appliedCommitSHA
+        self.fileDigests = fileDigests
+    }
+}
+
+public struct FileDigestRecord: Codable, Equatable, Sendable {
+    public var relPath: String
+    public var sha256: String
+
+    public init(relPath: String, sha256: String) {
+        self.relPath = relPath
+        self.sha256 = sha256
+    }
+}
+
+public struct LogicalSkillRecord: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var sourceId: String
+    public var skillPathInRepo: String
+    public var displayName: String
+
+    public init(id: String, sourceId: String, skillPathInRepo: String, displayName: String) {
+        self.id = id
+        self.sourceId = sourceId
+        self.skillPathInRepo = skillPathInRepo
+        self.displayName = displayName
     }
 }
 
@@ -89,6 +119,7 @@ struct SidecarSnapshot: Codable, Equatable {
     var locations: [LocationRecord] = []
     var projects: [ProjectRecord] = []
     var sources: [SkillSourceRecord] = []
+    var logicalSkills: [LogicalSkillRecord] = []
 }
 
 enum SidecarStore {

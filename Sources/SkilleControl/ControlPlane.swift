@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ScanResult: Equatable, Sendable {
     public let skillsFound: Int
@@ -125,12 +126,15 @@ public struct ControlPlane: Sendable {
     public func sourceDetail(id: String) -> SourceDetail? {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
         guard let source = snap.sources.first(where: { $0.id == id }) else { return nil }
+        let installedPaths = Set(
+            snap.logicalSkills.filter { $0.sourceId == source.id }.map(\.skillPathInRepo)
+        )
         let packages = discoverPackages(in: URL(fileURLWithPath: source.cachePath, isDirectory: true))
             .map {
                 SourcePackage(
                     pathInRepo: $0.path,
                     displayName: $0.name,
-                    installStatus: .notInstalled
+                    installStatus: installedPaths.contains($0.path) ? .installed : .notInstalled
                 )
             }
             .sorted { $0.pathInRepo < $1.pathInRepo }
@@ -143,6 +147,112 @@ public struct ControlPlane: Sendable {
             ),
             packages: packages
         )
+    }
+
+    public func availableInstallRoots() -> [InstallRootOption] {
+        let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        // Prefer existing scanned roots; ensure ~/.agents/skills is offered when any adapter supports it.
+        var options: [InstallRootOption] = snap.skillRoots
+            .filter { $0.scope == "global" }
+            .map {
+                InstallRootOption(
+                    id: $0.id,
+                    path: $0.path,
+                    isDefaultSuggestion: $0.path.hasSuffix("/.agents/skills")
+                )
+            }
+        let agentsPath = homeDirectory.appendingPathComponent(".agents/skills", isDirectory: true).path
+        if !options.contains(where: { $0.path == agentsPath }) {
+            let id = stableID("root", agentsPath)
+            options.append(
+                InstallRootOption(id: id, path: agentsPath, isDefaultSuggestion: true)
+            )
+        }
+        return options.sorted {
+            if $0.isDefaultSuggestion != $1.isDefaultSuggestion { return $0.isDefaultSuggestion }
+            return $0.path < $1.path
+        }
+    }
+
+    public func install(
+        sourceId: String,
+        packagePaths: [String],
+        skillRootIds: [String]
+    ) throws {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        guard let source = snap.sources.first(where: { $0.id == sourceId }) else {
+            throw InstallError.sourceNotFound
+        }
+        let cacheRoot = URL(fileURLWithPath: source.cachePath, isDirectory: true)
+        let fm = FileManager.default
+
+        for packagePath in packagePaths {
+            let from = cacheRoot.appendingPathComponent(packagePath, isDirectory: true)
+            guard fm.fileExists(atPath: from.appendingPathComponent("SKILL.md").path) else {
+                throw InstallError.packageNotFound(packagePath)
+            }
+            let folderName = URL(fileURLWithPath: packagePath).lastPathComponent
+            let display = displayName(
+                from: from.appendingPathComponent("SKILL.md"),
+                fallback: folderName
+            )
+            let logicalID = stableID("logical", "\(sourceId)|\(packagePath)")
+            if !snap.logicalSkills.contains(where: { $0.id == logicalID }) {
+                snap.logicalSkills.append(
+                    LogicalSkillRecord(
+                        id: logicalID,
+                        sourceId: sourceId,
+                        skillPathInRepo: packagePath,
+                        displayName: display
+                    )
+                )
+            }
+
+            for rootId in skillRootIds {
+                let rootPath: String
+                if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
+                    rootPath = existing.path
+                } else if rootId == stableID("root", homeDirectory.appendingPathComponent(".agents/skills").path) {
+                    rootPath = homeDirectory.appendingPathComponent(".agents/skills").path
+                    try fm.createDirectory(
+                        at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                        withIntermediateDirectories: true
+                    )
+                    snap.skillRoots.append(
+                        SkillRootRecord(id: rootId, adapterIds: [], path: rootPath)
+                    )
+                } else {
+                    throw InstallError.rootNotFound(rootId)
+                }
+
+                let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
+                    .appendingPathComponent(folderName, isDirectory: true)
+                    .standardizedFileURL
+                if fm.fileExists(atPath: dest.path) {
+                    try fm.removeItem(at: dest)
+                }
+                try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: from, to: dest)
+
+                let digests = try Self.fileDigests(ofTree: dest)
+                let destPath = dest.resolvingSymlinksInPath().path
+                let locID = stableID("loc", destPath)
+                snap.locations.removeAll { $0.id == locID || $0.onDiskPath == destPath }
+                snap.locations.append(
+                    LocationRecord(
+                        id: locID,
+                        skillRootId: rootId,
+                        onDiskPath: destPath,
+                        displayName: display,
+                        logicalSkillId: logicalID,
+                        appliedCommitSHA: source.commitSHA,
+                        fileDigests: digests
+                    )
+                )
+            }
+        }
+
+        try SidecarStore.save(snap, to: sidecarRoot)
     }
 
     public static func normalizeGitURL(_ raw: String) -> String {
@@ -172,7 +282,9 @@ public struct ControlPlane: Sendable {
                 id: loc.id,
                 onDiskPath: loc.onDiskPath,
                 skillRootPath: root?.path ?? "",
-                adapterIds: root?.adapterIds ?? []
+                adapterIds: root?.adapterIds ?? [],
+                appliedCommitSHA: loc.appliedCommitSHA,
+                fileDigests: loc.fileDigests
             )
         }
         .sorted { $0.onDiskPath < $1.onDiskPath }
@@ -260,8 +372,22 @@ public struct ControlPlane: Sendable {
         }
 
         var locations: [LocationRecord] = []
+        let previousByPath = Dictionary(uniqueKeysWithValues: previous.locations.map { ($0.onDiskPath, $0) })
         for root in rootByPath.values {
-            locations.append(contentsOf: discoverSkills(in: root))
+            for discovered in discoverSkills(in: root) {
+                if let old = previousByPath[discovered.onDiskPath] {
+                    var merged = discovered
+                    merged.logicalSkillId = old.logicalSkillId
+                    merged.appliedCommitSHA = old.appliedCommitSHA
+                    merged.fileDigests = old.fileDigests
+                    if let name = previous.logicalSkills.first(where: { $0.id == old.logicalSkillId })?.displayName {
+                        merged.displayName = name
+                    }
+                    locations.append(merged)
+                } else {
+                    locations.append(discovered)
+                }
+            }
         }
         locations.sort { $0.onDiskPath < $1.onDiskPath }
 
@@ -269,7 +395,8 @@ public struct ControlPlane: Sendable {
             skillRoots: rootByPath.values.sorted { $0.path < $1.path },
             locations: locations,
             projects: previous.projects,
-            sources: previous.sources
+            sources: previous.sources,
+            logicalSkills: previous.logicalSkills
         )
         let changed = next != previous
         try SidecarStore.save(next, to: sidecarRoot)
@@ -383,6 +510,43 @@ public struct ControlPlane: Sendable {
         }
         return results
     }
+
+    public static func fileDigests(ofTree root: URL) throws -> [FileDigestRecord] {
+        var digests: [FileDigestRecord] = []
+        let fm = FileManager.default
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        for case let item as URL in enumerator {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: item.path, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+            let data = try Data(contentsOf: item)
+            let hash = SHA256.hash(data: data)
+            let hex = hash.map { String(format: "%02x", $0) }.joined()
+            let itemPath = item.resolvingSymlinksInPath().standardizedFileURL.path
+            let rel: String
+            if itemPath.hasPrefix(rootPath + "/") {
+                rel = String(itemPath.dropFirst(rootPath.count + 1))
+            } else {
+                rel = item.lastPathComponent
+            }
+            digests.append(FileDigestRecord(relPath: rel, sha256: hex))
+        }
+        return digests.sorted { $0.relPath < $1.relPath }
+    }
+}
+
+public enum InstallError: Error, Equatable {
+    case sourceNotFound
+    case packageNotFound(String)
+    case rootNotFound(String)
 }
 
 public struct SkillSummary: Identifiable, Equatable, Sendable {
@@ -418,12 +582,35 @@ public struct LocationSummary: Identifiable, Equatable, Sendable {
     public let onDiskPath: String
     public let skillRootPath: String
     public let adapterIds: [String]
+    public let appliedCommitSHA: String?
+    public let fileDigests: [FileDigestRecord]
 
-    public init(id: String, onDiskPath: String, skillRootPath: String, adapterIds: [String]) {
+    public init(
+        id: String,
+        onDiskPath: String,
+        skillRootPath: String,
+        adapterIds: [String],
+        appliedCommitSHA: String? = nil,
+        fileDigests: [FileDigestRecord] = []
+    ) {
         self.id = id
         self.onDiskPath = onDiskPath
         self.skillRootPath = skillRootPath
         self.adapterIds = adapterIds
+        self.appliedCommitSHA = appliedCommitSHA
+        self.fileDigests = fileDigests
+    }
+}
+
+public struct InstallRootOption: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let path: String
+    public let isDefaultSuggestion: Bool
+
+    public init(id: String, path: String, isDefaultSuggestion: Bool) {
+        self.id = id
+        self.path = path
+        self.isDefaultSuggestion = isDefaultSuggestion
     }
 }
 
