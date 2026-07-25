@@ -541,12 +541,139 @@ public struct ControlPlane: Sendable {
         }
         return digests.sorted { $0.relPath < $1.relPath }
     }
+
+    /// Soft cap for loading text into the in-app editor buffer (~512 KiB).
+    public static let textBufferLimitBytes = 512 * 1024
+
+    public func listSkillFiles(at skillRootPath: String) throws -> [SkillFileEntry] {
+        let root = URL(fileURLWithPath: skillRootPath, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = root.path
+        guard FileManager.default.fileExists(atPath: rootPath) else {
+            throw EditorError.rootMissing
+        }
+        var entries: [SkillFileEntry] = []
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        for case let item as URL in enumerator {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir),
+                  !isDir.boolValue
+            else { continue }
+            let itemPath = item.resolvingSymlinksInPath().standardizedFileURL.path
+            let rel: String
+            if itemPath.hasPrefix(rootPath + "/") {
+                rel = String(itemPath.dropFirst(rootPath.count + 1))
+            } else {
+                rel = item.lastPathComponent
+            }
+            entries.append(SkillFileEntry(relativePath: rel))
+        }
+        return entries.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    public func readTextFile(at skillRootPath: String, relativePath: String) throws -> SkillFileContent {
+        let url = try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+
+        if !Self.looksLikeText(url: url) {
+            return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .nonText)
+        }
+        if size > Self.textBufferLimitBytes {
+            return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .tooLarge)
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .text(text))
+    }
+
+    public func writeTextFile(at skillRootPath: String, relativePath: String, content: String) throws {
+        let url = try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
+        try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    public func absoluteFileURL(skillRootPath: String, relativePath: String) throws -> URL {
+        try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
+    }
+
+    private func resolvedFileURL(skillRootPath: String, relativePath: String) throws -> URL {
+        let root = URL(fileURLWithPath: skillRootPath, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let url = root.appendingPathComponent(relativePath).standardizedFileURL
+        let rootPath = root.path
+        guard url.path == rootPath || url.path.hasPrefix(rootPath + "/") else {
+            throw EditorError.pathEscape
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw EditorError.fileMissing
+        }
+        return url
+    }
+
+    private static func looksLikeText(url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        let textExts: Set<String> = [
+            "md", "txt", "json", "yml", "yaml", "toml", "swift", "py", "js", "ts",
+            "sh", "zsh", "bash", "css", "html", "xml", "csv", "svg", "gitignore",
+        ]
+        if textExts.contains(ext) || url.lastPathComponent == "SKILL.md" {
+            return true
+        }
+        if ext.isEmpty {
+            // Heuristic: no NUL in first 512 bytes
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            defer { try? handle.close() }
+            let sample = handle.readData(ofLength: 512)
+            return !sample.contains(0)
+        }
+        return false
+    }
 }
 
 public enum InstallError: Error, Equatable {
     case sourceNotFound
     case packageNotFound(String)
     case rootNotFound(String)
+}
+
+public enum EditorError: Error, Equatable {
+    case rootMissing
+    case fileMissing
+    case pathEscape
+}
+
+public struct SkillFileEntry: Identifiable, Equatable, Sendable {
+    public var id: String { relativePath }
+    public let relativePath: String
+
+    public init(relativePath: String) {
+        self.relativePath = relativePath
+    }
+}
+
+public enum SkillFileKind: Equatable, Sendable {
+    case text(String)
+    case nonText
+    case tooLarge
+}
+
+public struct SkillFileContent: Equatable, Sendable {
+    public let relativePath: String
+    public let byteSize: Int
+    public let kind: SkillFileKind
+
+    public init(relativePath: String, byteSize: Int, kind: SkillFileKind) {
+        self.relativePath = relativePath
+        self.byteSize = byteSize
+        self.kind = kind
+    }
 }
 
 public struct SkillSummary: Identifiable, Equatable, Sendable {
