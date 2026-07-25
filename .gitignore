@@ -1,0 +1,18 @@
+# macOS and local work
+.DS_Store
+._*
+.scratch/
+*.log
+
+# Editors
+.idea/
+.vscode/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.p8
+*.p12
+*.pem
