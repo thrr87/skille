@@ -7,20 +7,29 @@ struct LibraryShell: View {
     let controlPlane: ControlPlane
     @State private var tab: LibraryTab = .skills
     @State private var skills: [SkillSummary] = []
+    @State private var sources: [SkillSourceSummary] = []
     @State private var selectedSkillID: String?
+    @State private var selectedSourceID: String?
     @State private var toast: String?
     @State private var isScanning = false
+    @State private var showAddSource = false
 
     var body: some View {
         TabView(selection: $tab) {
-            SourcesStub()
+            SourcesHome(
+                controlPlane: controlPlane,
+                sources: sources,
+                selection: $selectedSourceID,
+                onAddSource: { showAddSource = true }
+            )
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
             SkillsHome(
                 controlPlane: controlPlane,
                 skills: skills,
                 selection: $selectedSkillID,
-                onAddProject: { addProject() }
+                onAddProject: { addProject() },
+                onAddSource: { showAddSource = true }
             )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
@@ -33,10 +42,14 @@ struct LibraryShell: View {
             ToolbarItemGroup {
                 Button("Scan") { runScan(manual: true) }
                     .disabled(isScanning)
-                Button("Add Source") {}
-                    .disabled(true)
+                Button("Add Source") { showAddSource = true }
                 Button("New Skill") {}
                     .disabled(true)
+            }
+        }
+        .sheet(isPresented: $showAddSource) {
+            AddSourceSheet { url, branch in
+                addSource(url: url, branch: branch)
             }
         }
         .overlay(alignment: .bottom) {
@@ -58,6 +71,7 @@ struct LibraryShell: View {
         do {
             let result = try controlPlane.scan()
             skills = controlPlane.listSkills()
+            sources = controlPlane.listSources()
             if let selectedSkillID, !skills.contains(where: { $0.id == selectedSkillID }) {
                 self.selectedSkillID = nil
             }
@@ -99,6 +113,18 @@ struct LibraryShell: View {
             showToast("Could not add project: \(error.localizedDescription)")
         }
     }
+
+    private func addSource(url: String, branch: String) {
+        do {
+            let source = try controlPlane.addSource(url: url, branch: branch)
+            sources = controlPlane.listSources()
+            selectedSourceID = source.id
+            tab = .sources
+            showToast("Fetched \(source.displayName)")
+        } catch {
+            showToast("Add Source failed: \(error.localizedDescription)")
+        }
+    }
 }
 
 private enum LibraryTab: Hashable {
@@ -110,10 +136,11 @@ struct SkillsHome: View {
     let skills: [SkillSummary]
     @Binding var selection: String?
     var onAddProject: () -> Void = {}
+    var onAddSource: () -> Void = {}
 
     var body: some View {
         if skills.isEmpty {
-            SkillsEmptyState(onAddProject: onAddProject)
+            SkillsEmptyState(onAddProject: onAddProject, onAddSource: onAddSource)
         } else {
             NavigationSplitView {
                 List(skills, selection: $selection) { skill in
@@ -225,6 +252,7 @@ struct SkillRow: View {
 
 struct SkillsEmptyState: View {
     var onAddProject: () -> Void = {}
+    var onAddSource: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 20) {
@@ -241,8 +269,7 @@ struct SkillsEmptyState: View {
                     .frame(maxWidth: 420)
             }
             HStack(spacing: 12) {
-                Button("Add Source") {}
-                    .disabled(true)
+                Button("Add Source", action: onAddSource)
                 Button("Add Project", action: onAddProject)
             }
             .controlSize(.large)
@@ -314,13 +341,115 @@ private struct ProjectsTab: View {
     }
 }
 
-private struct SourcesStub: View {
+private struct SourcesHome: View {
+    let controlPlane: ControlPlane
+    let sources: [SkillSourceSummary]
+    @Binding var selection: String?
+    var onAddSource: () -> Void
+
     var body: some View {
-        ContentUnavailableView(
-            "Sources",
-            systemImage: "shippingbox",
-            description: Text("Add a Skill Source to install from git.")
-        )
+        if sources.isEmpty {
+            ContentUnavailableView {
+                Label("No sources", systemImage: "shippingbox")
+            } description: {
+                Text("Add a git Skill Source to list packages and install later.")
+            } actions: {
+                Button("Add Source", action: onAddSource)
+            }
+        } else {
+            NavigationSplitView {
+                List(sources, selection: $selection) { source in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(source.displayName)
+                            .font(.body.weight(.medium))
+                        Text("\(source.branch) · \(source.normalizedUrl)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .tag(source.id)
+                }
+                .navigationTitle("Sources")
+            } detail: {
+                if let selection, let detail = controlPlane.sourceDetail(id: selection) {
+                    SourceInspector(detail: detail)
+                } else {
+                    ContentUnavailableView(
+                        "Select a source",
+                        systemImage: "shippingbox",
+                        description: Text("Packages in the repo appear here.")
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct SourceInspector: View {
+    let detail: SourceDetail
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("URL", value: detail.summary.normalizedUrl)
+                LabeledContent("Branch", value: detail.summary.branch)
+            }
+            Section("Packages") {
+                ForEach(detail.packages) { pkg in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pkg.displayName)
+                                .font(.body.weight(.medium))
+                            Text(pkg.pathInRepo)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(pkg.installStatus == .notInstalled ? "Not installed" : "Installed")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section {
+                Button("Install…") {}
+                    .disabled(true)
+                Button("Update…") {}
+                    .disabled(true)
+            }
+        }
+        .navigationTitle(detail.summary.displayName)
+    }
+}
+
+private struct AddSourceSheet: View {
+    var onAdd: (String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var url = ""
+    @State private var branch = "main"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Skill Source")
+                .font(.title2.weight(.semibold))
+            TextField("Git URL", text: $url)
+                .textFieldStyle(.roundedBorder)
+            TextField("Branch", text: $branch)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    onAdd(url, branch.isEmpty ? "main" : branch)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
     }
 }
 

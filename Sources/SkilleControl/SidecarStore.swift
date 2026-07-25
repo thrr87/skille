@@ -56,10 +56,39 @@ public struct ProjectRecord: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public struct SkillSourceRecord: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var normalizedUrl: String
+    public var branch: String
+    public var displayName: String
+    public var lastFetchAt: Date
+    public var cachePath: String
+    public var commitSHA: String
+
+    public init(
+        id: String,
+        normalizedUrl: String,
+        branch: String,
+        displayName: String,
+        lastFetchAt: Date = Date(),
+        cachePath: String,
+        commitSHA: String
+    ) {
+        self.id = id
+        self.normalizedUrl = normalizedUrl
+        self.branch = branch
+        self.displayName = displayName
+        self.lastFetchAt = lastFetchAt
+        self.cachePath = cachePath
+        self.commitSHA = commitSHA
+    }
+}
+
 struct SidecarSnapshot: Codable, Equatable {
     var skillRoots: [SkillRootRecord] = []
     var locations: [LocationRecord] = []
     var projects: [ProjectRecord] = []
+    var sources: [SkillSourceRecord] = []
 }
 
 enum SidecarStore {
