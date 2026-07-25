@@ -12,3 +12,7 @@ the product language and current scope.
 
 Please report vulnerabilities privately. See
 [SECURITY.md](.github/SECURITY.md) for instructions.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
