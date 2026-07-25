@@ -1,8 +1,19 @@
 # macOS and local work
 .DS_Store
 ._*
-.scratch/
+.scratch/*
+!.scratch/skille-spec/
+!.scratch/skille-spec/**
+!.scratch/research/
+!.scratch/research/**
 *.log
+
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.swiftpm/
 
 # Editors
 .idea/
