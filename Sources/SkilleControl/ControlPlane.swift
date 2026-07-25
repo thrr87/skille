@@ -513,6 +513,31 @@ public struct ControlPlane: Sendable {
         // No disk or last-applied changes.
     }
 
+    public func locationsNeedingUpdate(sourceId: String) throws -> [UpdateChecklistItem] {
+        let snap = try SidecarStore.load(from: sidecarRoot)
+        guard let source = snap.sources.first(where: { $0.id == sourceId }) else {
+            throw UpdateReviewError.locationNotFound
+        }
+        let logicalIds = Set(snap.logicalSkills.filter { $0.sourceId == sourceId }.map(\.id))
+        return snap.locations.compactMap { loc -> UpdateChecklistItem? in
+            guard let lid = loc.logicalSkillId, logicalIds.contains(lid),
+                  let applied = loc.appliedCommitSHA,
+                  source.commitSHA != applied
+            else { return nil }
+            return UpdateChecklistItem(
+                locationId: loc.id,
+                displayName: loc.displayName,
+                onDiskPath: loc.onDiskPath,
+                isDirty: Self.isDirty(loc)
+            )
+        }
+        .sorted { $0.displayName < $1.displayName }
+    }
+
+    public func prepareUpdateReviews(locationIds: [String]) throws -> [UpdateReview] {
+        try locationIds.map { try prepareUpdateReview(locationId: $0) }
+    }
+
     public static func diffTrees(local: URL, remote: URL) throws -> [UpdateFileChange] {
         let localDigests = Dictionary(
             uniqueKeysWithValues: (try fileDigests(ofTree: local)).map { ($0.relPath, $0) }
@@ -988,6 +1013,21 @@ public struct UpdateReview: Equatable, Sendable {
         self.appliedCommitSHA = appliedCommitSHA
         self.isDirty = isDirty
         self.files = files
+    }
+}
+
+public struct UpdateChecklistItem: Identifiable, Equatable, Sendable {
+    public var id: String { locationId }
+    public let locationId: String
+    public let displayName: String
+    public let onDiskPath: String
+    public let isDirty: Bool
+
+    public init(locationId: String, displayName: String, onDiskPath: String, isDirty: Bool) {
+        self.locationId = locationId
+        self.displayName = displayName
+        self.onDiskPath = onDiskPath
+        self.isDirty = isDirty
     }
 }
 
