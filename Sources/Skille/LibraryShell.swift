@@ -19,7 +19,7 @@ struct LibraryShell: View {
     @State private var checklistSourceID: String?
     @State private var reviewQueue: [UpdateReview] = []
     @State private var activeReview: UpdateReview?
-    @State private var skillFilter = ""
+    @State private var skillQuery = SkillLibraryQuery()
     @State private var pendingNavigation: (() -> Void)?
     @State private var navigationError: String?
 
@@ -43,9 +43,9 @@ struct LibraryShell: View {
                 .accessibilityLabel("Sources tab")
             SkillsHome(
                 controlPlane: controlPlane,
-                skills: filteredSkills,
+                skills: skills,
                 selection: guardedSkillSelection,
-                filter: $skillFilter,
+                query: $skillQuery,
                 editorSession: $editorSession,
                 onAddProject: { addProject() },
                 onAddSource: { showAddSource = true },
@@ -197,12 +197,6 @@ struct LibraryShell: View {
             get: { selectedSkillID },
             set: { newValue in requestNavigation { selectedSkillID = newValue } }
         )
-    }
-
-    private var filteredSkills: [SkillSummary] {
-        let query = skillFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return skills }
-        return skills.filter { $0.displayName.localizedCaseInsensitiveContains(query) }
     }
 
     private func runScan(manual: Bool) {
@@ -375,7 +369,7 @@ struct SkillsHome: View {
     let controlPlane: ControlPlane
     let skills: [SkillSummary]
     @Binding var selection: String?
-    @Binding var filter: String
+    @Binding var query: SkillLibraryQuery
     @Binding var editorSession: EditorSession
     var onAddProject: () -> Void = {}
     var onAddSource: () -> Void = {}
@@ -383,11 +377,11 @@ struct SkillsHome: View {
     var requestNavigation: (@escaping () -> Void) -> Void = { $0() }
 
     var body: some View {
-        if skills.isEmpty && filter.isEmpty {
+        if skills.isEmpty && query.isEmpty {
             SkillsEmptyState(onAddProject: onAddProject, onAddSource: onAddSource)
         } else {
             NavigationSplitView {
-                List(skills, selection: $selection) { skill in
+                List(result.skills, selection: $selection) { skill in
                     SkillRow(skill: skill)
                         .tag(skill.id)
                         .accessibilityElement(children: .combine)
@@ -395,11 +389,18 @@ struct SkillsHome: View {
                         .accessibilityHint("Shows skill contents in the detail pane")
                 }
                 .navigationTitle("Skills")
-                .searchable(text: $filter, prompt: "Filter skills")
+                .searchable(text: $query.text, prompt: "Search Skills")
+                .toolbar {
+                    ToolbarItem {
+                        filterMenu
+                    }
+                }
                 .accessibilityLabel("Skills list")
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
             } detail: {
-                if let selection, let detail = controlPlane.skillDetail(id: selection) {
+                if let selection = result.selection,
+                   let detail = controlPlane.skillDetail(id: selection)
+                {
                     SkillInspector(
                         detail: detail,
                         controlPlane: controlPlane,
@@ -409,24 +410,83 @@ struct SkillsHome: View {
                     )
                 } else {
                     ContentUnavailableView(
-                        filter.isEmpty ? "Select a skill" : "No matching skills",
-                        systemImage: "square.stack.3d.up",
+                        query.isEmpty ? "Select a skill" : "No matching skills",
+                        systemImage: query.isEmpty ? "square.stack.3d.up" : "magnifyingglass",
                         description: Text(
-                            filter.isEmpty
+                            query.isEmpty
                                 ? "SKILL.md opens here for reading and editing."
-                                : "Try a different filter."
+                                : "Try a different search or clear a filter."
                         )
+                    )
+                    .accessibilityLabel(
+                        query.isEmpty ? "Select a skill" : "No skills match the active search and filters"
                     )
                 }
             }
         }
     }
 
+    private var result: SkillLibraryResult {
+        query.apply(to: skills, selection: selection)
+    }
+
+    private var availableAdapterIds: [String] {
+        Set(skills.flatMap(\.adapterIds)).sorted()
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("Agent", selection: $query.adapterId) {
+                Text("All Agents").tag(String?.none)
+                ForEach(availableAdapterIds, id: \.self) { id in
+                    Text(AdapterRegistry.displayNames(forAdapterIds: [id]))
+                        .tag(Optional(id))
+                }
+            }
+            Picker("Scope", selection: $query.scope) {
+                Text("All Scopes").tag(SkillScopeFilter.all)
+                Text("User").tag(SkillScopeFilter.global)
+                Text("Project").tag(SkillScopeFilter.project)
+            }
+            Picker("Provenance", selection: $query.provenance) {
+                Text("All Provenance").tag(SkillProvenanceFilter.all)
+                Text("Sourced").tag(SkillProvenanceFilter.sourced)
+                Text("No Source").tag(SkillProvenanceFilter.orphan)
+            }
+            Divider()
+            Toggle("Update Available", isOn: $query.updatesOnly)
+            Toggle("Local Edits", isOn: $query.dirtyOnly)
+            if !query.isEmpty {
+                Divider()
+                Button("Clear Search and Filters") { query = SkillLibraryQuery() }
+            }
+        } label: {
+            Label(
+                query.activeFilterCount == 0
+                    ? "Filter"
+                    : "\(query.activeFilterCount) Filters",
+                systemImage: query.activeFilterCount == 0
+                    ? "line.3.horizontal.decrease.circle"
+                    : "line.3.horizontal.decrease.circle.fill"
+            )
+        }
+        .accessibilityLabel(
+            query.activeFilterCount == 0
+                ? "Skill filters, none active"
+                : "Skill filters, \(query.activeFilterCount) active"
+        )
+    }
+
     private func skillAccessibilityLabel(_ skill: SkillSummary) -> String {
         var parts = [skill.displayName]
+        if let sourceName = skill.sourceName { parts.append("source \(sourceName)") }
         if !skill.adapterIds.isEmpty {
             parts.append("used by \(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))")
         }
+        if let context = skill.locationPaths.first ?? skill.skillRootPaths.first {
+            parts.append("on disk at \(context)")
+        }
+        parts.append(skill.isFromProject ? "project scope" : "user scope")
         if skill.isOrphan { parts.append("no git source") }
         if skill.hasUpdate { parts.append("update available") }
         if skill.isDirty { parts.append("local edits") }
@@ -633,13 +693,20 @@ struct SkillRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                } else if skill.isOrphan {
-                    Text("No source")
+                } else if let sourceName = skill.sourceName {
+                    Text(sourceName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let context = rowContext {
+                    Text(context)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 HStack(spacing: 6) {
-                    if skill.isOrphan && !skill.adapterIds.isEmpty {
+                    if skill.isOrphan {
                         Text("No source")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -669,26 +736,25 @@ struct SkillRow: View {
             }
             Spacer(minLength: 4)
             if skill.locationCount > 1 {
-                Text("\(skill.locationCount)")
+                Label("\(skill.locationCount)", systemImage: "doc.on.doc")
+                    .labelStyle(.titleAndIcon)
                     .font(.caption.monospacedDigit())
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Color.secondary.opacity(0.15), in: Capsule())
                     .help("\(skill.locationCount) on-disk copies")
                     .accessibilityLabel("\(skill.locationCount) on-disk locations")
-            } else if !skill.adapterIds.isEmpty {
-                Text("\(skill.adapterIds.count)")
-                    .font(.caption.monospacedDigit())
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                    .help(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))
-                    .accessibilityLabel(
-                        "\(skill.adapterIds.count) agents: \(AdapterRegistry.displayNames(forAdapterIds: skill.adapterIds))"
-                    )
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var rowContext: String? {
+        if skill.locationCount == 1 {
+            return skill.locationPaths.first ?? skill.skillRootPaths.first
+        }
+        guard !skill.skillRootPaths.isEmpty else { return nil }
+        return skill.skillRootPaths.joined(separator: ", ")
     }
 }
 

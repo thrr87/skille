@@ -466,7 +466,10 @@ public struct ControlPlane: Sendable {
                 locationCount: locs.count,
                 isOrphan: locs.allSatisfy { $0.logicalSkillId == nil },
                 isFromProject: locs.contains { roots[$0.skillRootId]?.scope == "project" },
-                adapterIds: Self.unionAdapterIds(for: locs, roots: roots)
+                adapterIds: Self.unionAdapterIds(for: locs, roots: roots),
+                locationPaths: locs.map(\.onDiskPath).sorted(),
+                skillRootPaths: Set(locs.compactMap { roots[$0.skillRootId]?.path }).sorted(),
+                scopes: Set(locs.compactMap { roots[$0.skillRootId]?.scope }).sorted()
             )
         let locations = locs.map { loc in
             let root = roots[loc.skillRootId]
@@ -486,6 +489,7 @@ public struct ControlPlane: Sendable {
     private func skillSummaries(from snap: SidecarSnapshot) -> [SkillSummary] {
         let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
         let tipBySource = Dictionary(uniqueKeysWithValues: snap.sources.map { ($0.id, $0.commitSHA) })
+        let sourceById = Dictionary(uniqueKeysWithValues: snap.sources.map { ($0.id, $0) })
         let logicalById = Dictionary(uniqueKeysWithValues: snap.logicalSkills.map { ($0.id, $0) })
         // Group by logicalSkillId when present; otherwise one row per orphan location.
         var grouped: [String: [LocationRecord]] = [:]
@@ -496,6 +500,14 @@ public struct ControlPlane: Sendable {
         return grouped.map { key, locs in
             let sorted = locs.sorted { $0.onDiskPath < $1.onDiskPath }
             let fromProject = sorted.contains { roots[$0.skillRootId]?.scope == "project" }
+            let sourceName = sorted.compactMap { location -> String? in
+                guard let logicalId = location.logicalSkillId,
+                      let sourceId = logicalById[logicalId]?.sourceId
+                else {
+                    return nil
+                }
+                return sourceById[sourceId]?.displayName
+            }.first
             let dirty = sorted.contains { Self.isDirty($0) }
             let update = sorted.contains { loc in
                 guard let logicalId = loc.logicalSkillId,
@@ -512,7 +524,11 @@ public struct ControlPlane: Sendable {
                 hasUpdate: update,
                 isDirty: dirty,
                 isFromProject: fromProject,
-                adapterIds: Self.unionAdapterIds(for: sorted, roots: roots)
+                adapterIds: Self.unionAdapterIds(for: sorted, roots: roots),
+                locationPaths: sorted.map(\.onDiskPath),
+                skillRootPaths: Set(sorted.compactMap { roots[$0.skillRootId]?.path }).sorted(),
+                sourceName: sourceName,
+                scopes: Set(sorted.compactMap { roots[$0.skillRootId]?.scope }).sorted()
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }

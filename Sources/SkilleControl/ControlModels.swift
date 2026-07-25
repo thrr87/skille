@@ -183,6 +183,10 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
     public let isFromProject: Bool
     /// Detected agents that load at least one of this skill's roots.
     public let adapterIds: [String]
+    public let locationPaths: [String]
+    public let skillRootPaths: [String]
+    public let sourceName: String?
+    public let scopes: [String]
 
     public init(
         id: String,
@@ -192,7 +196,11 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         hasUpdate: Bool = false,
         isDirty: Bool = false,
         isFromProject: Bool = false,
-        adapterIds: [String] = []
+        adapterIds: [String] = [],
+        locationPaths: [String] = [],
+        skillRootPaths: [String] = [],
+        sourceName: String? = nil,
+        scopes: [String] = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -202,6 +210,10 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         self.isDirty = isDirty
         self.isFromProject = isFromProject
         self.adapterIds = adapterIds
+        self.locationPaths = locationPaths
+        self.skillRootPaths = skillRootPaths
+        self.sourceName = sourceName
+        self.scopes = scopes.isEmpty ? [isFromProject ? "project" : "global"] : scopes
     }
 }
 
