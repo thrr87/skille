@@ -12,6 +12,21 @@ struct NewSkillSheet: View {
     @State private var errorText: String?
 
     private var roots: [InstallRootOption] { controlPlane.availableInstallRoots() }
+    private var metadataError: String? {
+        guard !name.isEmpty || !descriptionText.isEmpty else { return nil }
+        do {
+            try ControlPlane.validateSkillMetadata(name: name, description: descriptionText)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+    private var canCreate: Bool {
+        !selectedRoots.isEmpty
+            && !name.isEmpty
+            && !descriptionText.isEmpty
+            && metadataError == nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -29,17 +44,15 @@ struct NewSkillSheet: View {
             .onAppear {
                 selectedRoots = Set(roots.filter(\.isDefaultSuggestion).map(\.id))
             }
-            if let errorText {
-                Text(errorText).foregroundStyle(.red)
+            if let message = errorText ?? metadataError {
+                Text(message).foregroundStyle(.red)
             }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Create") { create() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || selectedRoots.isEmpty)
+                    .disabled(!canCreate)
             }
         }
         .padding(24)

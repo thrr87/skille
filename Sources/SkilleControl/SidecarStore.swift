@@ -123,7 +123,7 @@ struct SidecarSnapshot: Codable, Equatable {
 }
 
 enum SidecarStore {
-    private static let fileName = "library.json"
+    static let fileName = "library.json"
 
     static func load(from root: URL) throws -> SidecarSnapshot {
         let url = root.appendingPathComponent(fileName)
