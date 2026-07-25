@@ -30,17 +30,7 @@ struct InstallSheet: View {
                 .frame(minHeight: 120)
                 Text("Skill roots")
                     .font(.headline)
-                List(roots, selection: $selectedRoots) { root in
-                    HStack {
-                        Text(root.path).font(.body.monospaced())
-                        if root.isDefaultSuggestion {
-                            Text("default")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .tag(root.id)
-                }
+                SkillRootPicker(roots: roots, selection: $selectedRoots)
                 .frame(minHeight: 100)
                 .onAppear {
                     selectedRoots = Set(roots.filter(\.isDefaultSuggestion).map(\.id))

@@ -219,11 +219,21 @@ public struct InstallRootOption: Identifiable, Equatable, Sendable {
     public let id: String
     public let path: String
     public let isDefaultSuggestion: Bool
+    public let adapterIds: [String]
+    public let scope: String
 
-    public init(id: String, path: String, isDefaultSuggestion: Bool) {
+    public init(
+        id: String,
+        path: String,
+        isDefaultSuggestion: Bool,
+        adapterIds: [String] = [],
+        scope: String = "global"
+    ) {
         self.id = id
         self.path = path
         self.isDefaultSuggestion = isDefaultSuggestion
+        self.adapterIds = adapterIds
+        self.scope = scope
     }
 }
 

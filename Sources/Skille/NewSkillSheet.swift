@@ -23,15 +23,7 @@ struct NewSkillSheet: View {
                 .textFieldStyle(.roundedBorder)
             Text("Skill roots")
                 .font(.headline)
-            List(roots, selection: $selectedRoots) { root in
-                HStack {
-                    Text(root.path).font(.body.monospaced())
-                    if root.isDefaultSuggestion {
-                        Text("default").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .tag(root.id)
-            }
+            SkillRootPicker(roots: roots, selection: $selectedRoots)
             .frame(minHeight: 120)
             .onAppear {
                 selectedRoots = Set(roots.filter(\.isDefaultSuggestion).map(\.id))
@@ -63,6 +55,55 @@ struct NewSkillSheet: View {
             dismiss()
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+}
+
+struct SkillRootPicker: View {
+    let roots: [InstallRootOption]
+    @Binding var selection: Set<String>
+
+    var body: some View {
+        List(selection: $selection) {
+            rootSection("Recommended", roots.filter(\.isDefaultSuggestion))
+            rootSection(
+                "User Skill roots",
+                roots.filter { !$0.isDefaultSuggestion && $0.scope == "global" }
+            )
+            rootSection("Project Skill roots", roots.filter { $0.scope == "project" })
+        }
+    }
+
+    @ViewBuilder
+    private func rootSection(_ title: String, _ roots: [InstallRootOption]) -> some View {
+        if !roots.isEmpty {
+            Section(title) {
+                ForEach(roots) { root in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(AdapterRegistry.displayNames(forAdapterIds: root.adapterIds))
+                            if root.isDefaultSuggestion {
+                                Text("recommended")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(root.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .tag(root.id)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        "\(AdapterRegistry.displayNames(forAdapterIds: root.adapterIds)), "
+                            + "\(root.scope == "project" ? "Project" : "User") Skill root, "
+                            + "\(root.path)"
+                            + (root.isDefaultSuggestion ? ", recommended" : "")
+                    )
+                }
+            }
         }
     }
 }

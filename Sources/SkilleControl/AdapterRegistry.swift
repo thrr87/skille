@@ -11,19 +11,26 @@ public struct AdapterDescriptor: Sendable, Equatable {
     public let projectSkillRoots: [String]
     /// Roots walked recursively for nested packages (plugin caches, etc.).
     public let deepGlobalSkillRoots: [String]
+    /// Roots Skille may create or write into for this adapter.
+    public let writableGlobalSkillRoots: [String]
+    public let writableProjectSkillRoots: [String]
 
     public init(
         id: String,
         detectRelativePaths: [String],
         globalSkillRoots: [String],
         projectSkillRoots: [String],
-        deepGlobalSkillRoots: [String] = []
+        deepGlobalSkillRoots: [String] = [],
+        writableGlobalSkillRoots: [String],
+        writableProjectSkillRoots: [String]
     ) {
         self.id = id
         self.detectRelativePaths = detectRelativePaths
         self.globalSkillRoots = globalSkillRoots
         self.projectSkillRoots = projectSkillRoots
         self.deepGlobalSkillRoots = deepGlobalSkillRoots
+        self.writableGlobalSkillRoots = writableGlobalSkillRoots
+        self.writableProjectSkillRoots = writableProjectSkillRoots
     }
 }
 
@@ -34,44 +41,58 @@ public enum AdapterRegistry {
             detectRelativePaths: [".cursor"],
             globalSkillRoots: [".agents/skills", ".cursor/skills", ".cursor/skills-cursor"],
             projectSkillRoots: [".agents/skills", ".cursor/skills"],
-            deepGlobalSkillRoots: [".cursor/plugins"]
+            deepGlobalSkillRoots: [".cursor/plugins"],
+            writableGlobalSkillRoots: [".agents/skills", ".cursor/skills"],
+            writableProjectSkillRoots: [".agents/skills", ".cursor/skills"]
         ),
         AdapterDescriptor(
             id: "claude-code",
             detectRelativePaths: [".claude"],
             globalSkillRoots: [".claude/skills"],
             projectSkillRoots: [".claude/skills"],
-            deepGlobalSkillRoots: [".claude/plugins"]
+            deepGlobalSkillRoots: [".claude/plugins"],
+            writableGlobalSkillRoots: [".claude/skills"],
+            writableProjectSkillRoots: [".claude/skills"]
         ),
         AdapterDescriptor(
             id: "codex",
             detectRelativePaths: [".codex"],
             globalSkillRoots: [".agents/skills", ".codex/skills"],
-            projectSkillRoots: [".agents/skills"]
+            projectSkillRoots: [".agents/skills"],
+            writableGlobalSkillRoots: [".agents/skills"],
+            writableProjectSkillRoots: [".agents/skills"]
         ),
         AdapterDescriptor(
             id: "gemini-cli",
             detectRelativePaths: [".gemini"],
             globalSkillRoots: [".agents/skills", ".gemini/skills"],
-            projectSkillRoots: [".agents/skills", ".gemini/skills"]
+            projectSkillRoots: [".agents/skills", ".gemini/skills"],
+            writableGlobalSkillRoots: [".agents/skills", ".gemini/skills"],
+            writableProjectSkillRoots: [".agents/skills", ".gemini/skills"]
         ),
         AdapterDescriptor(
             id: "opencode",
             detectRelativePaths: [".config/opencode"],
             globalSkillRoots: [".agents/skills", ".config/opencode/skills", ".claude/skills"],
-            projectSkillRoots: [".agents/skills", ".opencode/skills", ".claude/skills"]
+            projectSkillRoots: [".agents/skills", ".opencode/skills", ".claude/skills"],
+            writableGlobalSkillRoots: [".agents/skills", ".config/opencode/skills"],
+            writableProjectSkillRoots: [".agents/skills", ".opencode/skills"]
         ),
         AdapterDescriptor(
             id: "goose",
             detectRelativePaths: [".config/goose"],
             globalSkillRoots: [".agents/skills", ".claude/skills", ".config/goose/skills"],
-            projectSkillRoots: [".agents/skills", ".goose/skills", ".claude/skills"]
+            projectSkillRoots: [".agents/skills", ".goose/skills", ".claude/skills"],
+            writableGlobalSkillRoots: [".agents/skills", ".config/goose/skills"],
+            writableProjectSkillRoots: [".agents/skills", ".goose/skills"]
         ),
         AdapterDescriptor(
             id: "copilot",
             detectRelativePaths: [".copilot"],
             globalSkillRoots: [".copilot/skills", ".agents/skills"],
-            projectSkillRoots: [".github/skills", ".agents/skills", ".claude/skills"]
+            projectSkillRoots: [".github/skills", ".agents/skills", ".claude/skills"],
+            writableGlobalSkillRoots: [".agents/skills", ".copilot/skills"],
+            writableProjectSkillRoots: [".agents/skills", ".github/skills"]
         ),
         AdapterDescriptor(
             id: "amp",
@@ -82,7 +103,13 @@ public enum AdapterRegistry {
                 ".config/amp/skills",
                 ".claude/skills",
             ],
-            projectSkillRoots: [".agents/skills", ".claude/skills"]
+            projectSkillRoots: [".agents/skills", ".claude/skills"],
+            writableGlobalSkillRoots: [
+                ".agents/skills",
+                ".config/agents/skills",
+                ".config/amp/skills",
+            ],
+            writableProjectSkillRoots: [".agents/skills"]
         ),
     ]
 
