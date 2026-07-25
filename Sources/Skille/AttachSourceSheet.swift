@@ -19,6 +19,7 @@ struct AttachSourceSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Attach Source")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             Text("Bind a git URL and path so this orphan can receive updates. Nothing is tracked until you confirm.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

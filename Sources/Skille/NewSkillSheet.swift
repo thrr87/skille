@@ -17,6 +17,7 @@ struct NewSkillSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("New Skill")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
             TextField("Description", text: $descriptionText)

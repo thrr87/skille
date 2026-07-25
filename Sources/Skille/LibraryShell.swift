@@ -38,9 +38,12 @@ struct LibraryShell: View {
                 onInstall: { installSourceID = $0 },
                 onUpdateChecklist: { checklistSourceID = $0 }
             )
-                .tabItem { Label("Sources", systemImage: "shippingbox") }
+                .tabItem {
+                    Label("Sources", systemImage: "shippingbox")
+                        .accessibilityValue(tab == .sources ? "Selected" : "")
+                        .help("Sources (Command 1)")
+                }
                 .tag(LibraryTab.sources)
-                .accessibilityLabel("Sources tab")
             SkillsHome(
                 controlPlane: controlPlane,
                 skills: skills,
@@ -55,37 +58,69 @@ struct LibraryShell: View {
                 },
                 requestNavigation: requestNavigation
             )
-                .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
+                .tabItem {
+                    Label("Skills", systemImage: "square.stack.3d.up")
+                        .accessibilityValue(tab == .skills ? "Selected" : "")
+                        .help("Skills (Command 2)")
+                }
                 .tag(LibraryTab.skills)
-                .accessibilityLabel("Skills tab")
             ProjectsTab(controlPlane: controlPlane, onChanged: { runScan(manual: true) })
-                .tabItem { Label("Projects", systemImage: "folder") }
+                .tabItem {
+                    Label("Projects", systemImage: "folder")
+                        .accessibilityValue(tab == .projects ? "Selected" : "")
+                        .help("Projects (Command 3)")
+                }
                 .tag(LibraryTab.projects)
-                .accessibilityLabel("Projects tab")
         }
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
-            ToolbarItemGroup {
-                Button("Scan") { runScan(manual: true) }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Scan") {
+                    runScan(manual: true)
+                }
                     .keyboardShortcut("r", modifiers: [.command])
                     .disabled(isScanning)
                     .accessibilityLabel("Scan skill roots")
-                Button("Add Source") { showAddSource = true }
+                    .help("Scan skill roots (Command R)")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu("New", systemImage: "plus") {
+                    Button { showAddSource = true } label: {
+                        Label("Add Source", systemImage: "shippingbox")
+                    }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .accessibilityLabel("Add skill source")
-                Button("New Skill") { showNewSkill = true }
+                    Button { showNewSkill = true } label: {
+                        Label("New Skill", systemImage: "doc.badge.plus")
+                    }
                     .keyboardShortcut("n", modifiers: [.command])
-                    .accessibilityLabel("Create new skill")
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityLabel("Create or add")
+                .help("New Skill (Command N) or Add Source (Shift Command N)")
             }
         }
         .background(
             Group {
                 Button("") { requestNavigation { tab = .sources } }
                     .keyboardShortcut("1", modifiers: [.command]).opacity(0)
+                    .accessibilityHidden(true)
                 Button("") { requestNavigation { tab = .skills } }
                     .keyboardShortcut("2", modifiers: [.command]).opacity(0)
+                    .accessibilityHidden(true)
                 Button("") { requestNavigation { tab = .projects } }
                     .keyboardShortcut("3", modifiers: [.command]).opacity(0)
+                    .accessibilityHidden(true)
+                Button("") {
+                    guard NSApp.currentEvent?.modifierFlags.contains(.shift) != true else {
+                        return
+                    }
+                    showNewSkill = true
+                }
+                    .keyboardShortcut("n", modifiers: [.command]).opacity(0)
+                    .accessibilityHidden(true)
+                Button("") { showAddSource = true }
+                    .keyboardShortcut("n", modifiers: [.command, .shift]).opacity(0)
+                    .accessibilityHidden(true)
             }
         )
         .sheet(isPresented: $showAddSource) {
@@ -434,7 +469,14 @@ struct SkillsHome: View {
     }
 
     private var filterMenu: some View {
-        Menu {
+        Menu(
+            query.activeFilterCount == 0
+                ? "Filter"
+                : "\(query.activeFilterCount) \(query.activeFilterCount == 1 ? "Filter" : "Filters")",
+            systemImage: query.activeFilterCount == 0
+                ? "line.3.horizontal.decrease.circle"
+                : "line.3.horizontal.decrease.circle.fill"
+        ) {
             Picker("Agent", selection: $query.adapterId) {
                 Text("All Agents").tag(String?.none)
                 ForEach(availableAdapterIds, id: \.self) { id in
@@ -459,16 +501,8 @@ struct SkillsHome: View {
                 Divider()
                 Button("Clear Search and Filters") { query = SkillLibraryQuery() }
             }
-        } label: {
-            Label(
-                query.activeFilterCount == 0
-                    ? "Filter"
-                    : "\(query.activeFilterCount) Filters",
-                systemImage: query.activeFilterCount == 0
-                    ? "line.3.horizontal.decrease.circle"
-                    : "line.3.horizontal.decrease.circle.fill"
-            )
         }
+        .labelStyle(.titleAndIcon)
         .accessibilityLabel(
             query.activeFilterCount == 0
                 ? "Skill filters, none active"
@@ -614,12 +648,15 @@ struct SkillInspector: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .help("Discovered on disk without a tracked git source. Attach Source to enable updates.")
+                        .accessibilityLabel("No git source")
                 }
                 if detail.summary.hasUpdate {
                     Text("Update").font(.caption2).foregroundStyle(.orange)
+                        .accessibilityLabel("Update available")
                 }
                 if detail.summary.isDirty {
                     Text("Dirty").font(.caption2).foregroundStyle(.red)
+                        .accessibilityLabel("Local edits")
                 }
                 if detail.locations.count > 1 {
                     Picker("Location", selection: locationSelection) {
@@ -784,6 +821,7 @@ struct SkillsEmptyState: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(32)
+        .accessibilityElement(children: .contain)
     }
 }
 

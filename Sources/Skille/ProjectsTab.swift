@@ -19,6 +19,7 @@ struct ProjectsTab: View {
                         Button("Add Project…", action: add)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityElement(children: .contain)
                 } else {
                     List {
                         ForEach(projects) { project in
@@ -26,22 +27,25 @@ struct ProjectsTab: View {
                                 Text(project.rootPath)
                                     .font(.body.monospaced())
                                     .textSelection(.enabled)
+                                    .accessibilityLabel("Project \(project.rootPath)")
                                 Spacer()
                                 Button("Remove", role: .destructive) {
                                     remove(project)
                                 }
+                                .accessibilityLabel("Remove project \(project.rootPath)")
                             }
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel(project.rootPath)
                         }
                     }
                 }
             }
             .navigationTitle("Projects")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Add…", action: add)
-                        .accessibilityLabel("Add project")
+                ToolbarItem(placement: .secondaryAction) {
+                    Button(action: add) {
+                        Label("Add Project", systemImage: "folder.badge.plus")
+                    }
+                    .accessibilityLabel("Add project")
+                    .help("Add a project folder")
                 }
             }
         }

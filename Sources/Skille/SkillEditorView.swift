@@ -36,11 +36,12 @@ struct SkillEditorView: View {
                         .keyboardShortcut(.cancelAction)
                 }
             }
-            ToolbarItemGroup {
+            ToolbarItemGroup(placement: .secondaryAction) {
                 if isMarkdown {
                     Toggle("Preview", isOn: $showPreview)
                         .keyboardShortcut("p", modifiers: [.command, .shift])
                         .accessibilityLabel("Toggle markdown preview")
+                        .help("Toggle Markdown preview (Shift Command P)")
                 }
                 if case .text = session.fileKind {
                     Button("Save") { save() }
@@ -48,6 +49,7 @@ struct SkillEditorView: View {
                         .disabled(!isDirty)
                         .accessibilityLabel("Save file")
                         .accessibilityHint(isDirty ? "Save changes to disk" : "No unsaved changes")
+                        .help("Save file (Command S)")
                 }
             }
         }
