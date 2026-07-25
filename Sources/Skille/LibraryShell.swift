@@ -5,13 +5,16 @@ import SkilleControl
 struct LibraryShell: View {
     let controlPlane: ControlPlane
     @State private var tab: LibraryTab = .skills
+    @State private var skills: [SkillSummary] = []
+    @State private var toast: String?
+    @State private var isScanning = false
 
     var body: some View {
         TabView(selection: $tab) {
             SourcesStub()
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
-            SkillsHome(skills: controlPlane.listSkills())
+            SkillsHome(skills: skills)
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
             ProjectsStub()
@@ -21,13 +24,54 @@ struct LibraryShell: View {
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
             ToolbarItemGroup {
-                Button("Scan") {}
-                    .disabled(true)
+                Button("Scan") { runScan(manual: true) }
+                    .disabled(isScanning)
                 Button("Add Source") {}
                     .disabled(true)
                 Button("New Skill") {}
                     .disabled(true)
             }
+        }
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Text(toast)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .task { runScan(manual: false) }
+    }
+
+    private func runScan(manual: Bool) {
+        isScanning = true
+        defer { isScanning = false }
+        do {
+            let result = try controlPlane.scan()
+            skills = controlPlane.listSkills()
+            if result.inventoryChanged || manual {
+                let message: String
+                if result.skillsFound == 0 {
+                    message = result.detectedAdapterIds.isEmpty
+                        ? "Scan finished — no adapters or skills found"
+                        : "Scan finished — no skills in \(result.detectedAdapterIds.count) adapters"
+                } else {
+                    message = "Found \(result.skillsFound) skill\(result.skillsFound == 1 ? "" : "s") across \(result.rootsFound) root\(result.rootsFound == 1 ? "" : "s")"
+                }
+                showToast(message)
+            }
+        } catch {
+            showToast("Scan failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func showToast(_ message: String) {
+        withAnimation(.easeOut(duration: 0.2)) { toast = message }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation(.easeIn(duration: 0.15)) { toast = nil }
         }
     }
 }
@@ -43,9 +87,45 @@ struct SkillsHome: View {
         if skills.isEmpty {
             SkillsEmptyState()
         } else {
-            Text("Skills")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            NavigationSplitView {
+                List(skills) { skill in
+                    SkillRow(skill: skill)
+                }
+                .navigationTitle("Skills")
+            } detail: {
+                ContentUnavailableView(
+                    "Select a skill",
+                    systemImage: "square.stack.3d.up",
+                    description: Text("Inspector arrives in the next issue.")
+                )
+            }
         }
+    }
+}
+
+struct SkillRow: View {
+    let skill: SkillSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill.displayName)
+                    .font(.body.weight(.medium))
+                if skill.isOrphan {
+                    Text("Orphan")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text("\(skill.locationCount)")
+                .font(.caption.monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.15), in: Capsule())
+                .accessibilityLabel("\(skill.locationCount) locations")
+        }
+        .padding(.vertical, 2)
     }
 }
 
