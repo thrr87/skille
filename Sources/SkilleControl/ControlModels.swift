@@ -33,6 +33,7 @@ public enum InstallError: Error, Equatable {
     case sourceNotFound
     case packageNotFound(String)
     case rootNotFound(String)
+    case destinationConflict([String])
 }
 
 public enum AuthoringError: Error, Equatable {
