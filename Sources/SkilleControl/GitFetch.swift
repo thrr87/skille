@@ -72,3 +72,28 @@ public final class FixtureGitFetch: GitFetching, @unchecked Sendable {
 public enum GitFetchError: Error, Equatable {
     case cloneFailed(status: Int32)
 }
+
+/// Optional suggestion only — never auto-attaches. Walks parents for `.git` / origin.
+public func suggestedGitOrigin(startingAt path: String) -> String? {
+    var cursor = URL(fileURLWithPath: path, isDirectory: true)
+    for _ in 0..<6 {
+        if FileManager.default.fileExists(atPath: cursor.appendingPathComponent(".git").path) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            proc.arguments = ["-C", cursor.path, "remote", "get-url", "origin"]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else { return nil }
+            let url = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (url?.isEmpty == false) ? url : nil
+        }
+        let parent = cursor.deletingLastPathComponent()
+        if parent.path == cursor.path { break }
+        cursor = parent
+    }
+    return nil
+}
