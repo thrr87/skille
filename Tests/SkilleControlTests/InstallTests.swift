@@ -144,4 +144,143 @@ struct InstallTests {
         #expect(FileManager.default.fileExists(atPath: "\(globalPath)/one/SKILL.md"))
         #expect(FileManager.default.fileExists(atPath: "\(projectPath)/one/SKILL.md"))
     }
+
+    @Test func installRefusesAllConflictsBeforeChangingAnyDestination() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        let repo = fixture.root.appendingPathComponent("src", isDirectory: true)
+        let package = repo.appendingPathComponent("handy", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try "# New\n".write(
+            to: package.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        let agentsRoot = fixture.home.appendingPathComponent(".agents/skills", isDirectory: true)
+        let existing = agentsRoot.appendingPathComponent("handy", isDirectory: true)
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+        try "# Original\n".write(
+            to: existing.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home,
+            git: FixtureGitFetch(fixtureRoot: repo)
+        )
+        let source = try plane.addSource(url: "https://example.com/handy.git")
+        _ = try plane.scan()
+        let roots = plane.availableInstallRoots()
+
+        #expect(throws: InstallError.destinationConflict([existing.path])) {
+            try plane.install(
+                sourceId: source.id,
+                packagePaths: ["handy"],
+                skillRootIds: roots.map(\.id)
+            )
+        }
+
+        #expect(
+            try String(contentsOf: existing.appendingPathComponent("SKILL.md"), encoding: .utf8)
+                == "# Original\n"
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.home.appendingPathComponent(".cursor/skills/handy").path
+            )
+        )
+        #expect(plane.listSkills().allSatisfy { $0.isOrphan })
+
+        try plane.install(
+            sourceId: source.id,
+            packagePaths: ["handy"],
+            skillRootIds: roots.map(\.id),
+            replaceExisting: true
+        )
+
+        #expect(
+            try String(contentsOf: existing.appendingPathComponent("SKILL.md"), encoding: .utf8)
+                == "# New\n"
+        )
+        let installed = try #require(plane.listSkills().first { !$0.isOrphan })
+        #expect(installed.locationCount == roots.count)
+        let hiddenArtifacts = try FileManager.default.contentsOfDirectory(atPath: agentsRoot.path)
+            .filter { $0.hasPrefix(".skille-") }
+        #expect(hiddenArtifacts.isEmpty)
+    }
+
+    @Test func failedConfirmedReplacementRestoresEveryOriginalTree() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        let repo = fixture.root.appendingPathComponent("src", isDirectory: true)
+        let package = repo.appendingPathComponent("handy", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try "# New\n".write(
+            to: package.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        let agentsRoot = fixture.home.appendingPathComponent(".agents/skills", isDirectory: true)
+        let existing = agentsRoot.appendingPathComponent("handy", isDirectory: true)
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+        try "# Original\n".write(
+            to: existing.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let project = fixture.root.appendingPathComponent("project", isDirectory: true)
+        let readOnlyRoot = project.appendingPathComponent(".cursor/skills", isDirectory: true)
+        try FileManager.default.createDirectory(at: readOnlyRoot, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: readOnlyRoot.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: readOnlyRoot.path
+            )
+        }
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home,
+            git: FixtureGitFetch(fixtureRoot: repo)
+        )
+        try plane.addProject(path: project.path)
+        let source = try plane.addSource(url: "https://example.com/handy.git")
+        _ = try plane.scan()
+        let roots = plane.availableInstallRoots()
+        let global = try #require(roots.first { $0.path == agentsRoot.path })
+        let scoped = try #require(roots.first { $0.path == readOnlyRoot.path })
+
+        do {
+            try plane.install(
+                sourceId: source.id,
+                packagePaths: ["handy"],
+                skillRootIds: [global.id, scoped.id],
+                replaceExisting: true
+            )
+            Issue.record("Install unexpectedly succeeded in a read-only Skill root")
+        } catch {}
+
+        #expect(
+            try String(contentsOf: existing.appendingPathComponent("SKILL.md"), encoding: .utf8)
+                == "# Original\n"
+        )
+        #expect(plane.listSkills().allSatisfy { $0.isOrphan })
+    }
 }

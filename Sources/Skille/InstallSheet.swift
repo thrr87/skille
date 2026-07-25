@@ -10,6 +10,8 @@ struct InstallSheet: View {
     @State private var selectedPackages: Set<String> = []
     @State private var selectedRoots: Set<String> = []
     @State private var errorText: String?
+    @State private var conflicts: [String] = []
+    @State private var showReplaceConfirmation = false
 
     private var detail: SourceDetail? { controlPlane.sourceDetail(id: sourceId) }
     private var roots: [InstallRootOption] { controlPlane.availableInstallRoots() }
@@ -45,24 +47,45 @@ struct InstallSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Install") { perform() }
+                Button("Install") { perform(replaceExisting: false) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(selectedPackages.isEmpty || selectedRoots.isEmpty)
             }
         }
         .padding(24)
         .frame(width: 520, height: 480)
+        .confirmationDialog(
+            "Replace existing Skills?",
+            isPresented: $showReplaceConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Replace", role: .destructive) {
+                perform(replaceExisting: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These destinations already exist:\n\(conflicts.joined(separator: "\n"))")
+        }
     }
 
-    private func perform() {
+    private func perform(replaceExisting: Bool) {
+        errorText = nil
         do {
             try controlPlane.install(
                 sourceId: sourceId,
                 packagePaths: Array(selectedPackages),
-                skillRootIds: Array(selectedRoots)
+                skillRootIds: Array(selectedRoots),
+                replaceExisting: replaceExisting
             )
             onDone()
             dismiss()
+        } catch InstallError.destinationConflict(let paths) {
+            if replaceExisting {
+                errorText = "Selected packages resolve to the same destination."
+            } else {
+                conflicts = paths
+                showReplaceConfirmation = true
+            }
         } catch {
             errorText = error.localizedDescription
         }

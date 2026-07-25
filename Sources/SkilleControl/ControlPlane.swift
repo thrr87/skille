@@ -1,5 +1,14 @@
 import Foundation
 
+private struct PendingInstall {
+    let source: URL
+    let destination: URL
+    let root: SkillRootRecord
+    let logicalId: String
+    let displayName: String
+    let packagePath: String
+}
+
 /// Primary control-plane seam: UI and tests drive Skille through this API.
 /// Inject `sidecarRoot`, `homeDirectory`, and `git` (temp dirs + FixtureGitFetch in tests).
 public struct ControlPlane: Sendable {
@@ -202,7 +211,8 @@ public struct ControlPlane: Sendable {
     public func install(
         sourceId: String,
         packagePaths: [String],
-        skillRootIds: [String]
+        skillRootIds: [String],
+        replaceExisting: Bool = false
     ) throws {
         var snap = try SidecarStore.load(from: sidecarRoot)
         guard let source = snap.sources.first(where: { $0.id == sourceId }) else {
@@ -210,60 +220,152 @@ public struct ControlPlane: Sendable {
         }
         let cacheRoot = URL(fileURLWithPath: source.cachePath, isDirectory: true)
         let fm = FileManager.default
+        let writableRoots = writableRootRecords(in: snap)
+        let roots = try skillRootIds.map { rootId in
+            guard let root = writableRoots.first(where: { $0.id == rootId }) else {
+                throw InstallError.rootNotFound(rootId)
+            }
+            return root
+        }
+        var operations: [PendingInstall] = []
 
         for packagePath in packagePaths {
-            let from = cacheRoot.appendingPathComponent(packagePath, isDirectory: true)
-            guard fm.fileExists(atPath: from.appendingPathComponent("SKILL.md").path) else {
+            let sourcePackage = cacheRoot.appendingPathComponent(packagePath, isDirectory: true)
+            guard fm.fileExists(atPath: sourcePackage.appendingPathComponent("SKILL.md").path) else {
                 throw InstallError.packageNotFound(packagePath)
             }
             let folderName = URL(fileURLWithPath: packagePath).lastPathComponent
             let display = displayName(
-                from: from.appendingPathComponent("SKILL.md"),
+                from: sourcePackage.appendingPathComponent("SKILL.md"),
                 fallback: folderName
             )
             let logicalID = stableID("logical", "\(sourceId)|\(packagePath)")
-            if !snap.logicalSkills.contains(where: { $0.id == logicalID }) {
-                snap.logicalSkills.append(
-                    LogicalSkillRecord(
-                        id: logicalID,
-                        sourceId: sourceId,
-                        skillPathInRepo: packagePath,
-                        displayName: display
-                    )
+            operations += roots.map { root in
+                PendingInstall(
+                    source: sourcePackage,
+                    destination: URL(fileURLWithPath: root.path, isDirectory: true)
+                        .appendingPathComponent(folderName, isDirectory: true)
+                        .standardizedFileURL,
+                    root: root,
+                    logicalId: logicalID,
+                    displayName: display,
+                    packagePath: packagePath
                 )
             }
+        }
 
-            for rootId in skillRootIds {
-                let rootPath = try resolveRootPath(rootId, into: &snap)
+        let destinations = operations.map(\.destination.path)
+        let duplicateDestinations = Dictionary(grouping: destinations, by: { $0 })
+            .filter { $0.value.count > 1 }
+            .map(\.key)
+        if !duplicateDestinations.isEmpty {
+            throw InstallError.destinationConflict(duplicateDestinations.sorted())
+        }
+        let conflicts = destinations.filter(fm.fileExists(atPath:)).sorted()
+        if !replaceExisting, !conflicts.isEmpty {
+            throw InstallError.destinationConflict(conflicts)
+        }
 
-                let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
-                    .appendingPathComponent(folderName, isDirectory: true)
-                    .standardizedFileURL
-                if fm.fileExists(atPath: dest.path) {
-                    try fm.removeItem(at: dest)
+        var staged: [(operation: PendingInstall, url: URL)] = []
+        var createdRoots = Set<URL>()
+        do {
+            for operation in operations {
+                let rootURL = operation.destination.deletingLastPathComponent()
+                if !fm.fileExists(atPath: rootURL.path) {
+                    try fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
+                    createdRoots.insert(rootURL)
                 }
-                try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fm.copyItem(at: from, to: dest)
+                let stage = rootURL.appendingPathComponent(
+                    ".skille-install-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+                try fm.copyItem(at: operation.source, to: stage)
+                staged.append((operation, stage))
+            }
+        } catch {
+            staged.forEach { try? fm.removeItem(at: $0.url) }
+            removeEmptyRoots(createdRoots, fileManager: fm)
+            throw error
+        }
 
-                let digests = try SkillTreeIO.fileDigests(ofTree: dest)
-                let destPath = dest.resolvingSymlinksInPath().path
+        var committed: [(destination: URL, backup: URL?)] = []
+        do {
+            for item in staged {
+                let destination = item.operation.destination
+                var backup: URL?
+                if fm.fileExists(atPath: destination.path) {
+                    let url = destination.deletingLastPathComponent().appendingPathComponent(
+                        ".skille-backup-\(UUID().uuidString)",
+                        isDirectory: true
+                    )
+                    try fm.moveItem(at: destination, to: url)
+                    backup = url
+                }
+
+                do {
+                    try fm.moveItem(at: item.url, to: destination)
+                } catch {
+                    if let backup {
+                        try? fm.moveItem(at: backup, to: destination)
+                    }
+                    throw error
+                }
+                committed.append((destination, backup))
+            }
+
+            for operation in operations {
+                if !snap.skillRoots.contains(where: { $0.id == operation.root.id }) {
+                    snap.skillRoots.append(operation.root)
+                }
+                if !snap.logicalSkills.contains(where: { $0.id == operation.logicalId }) {
+                    snap.logicalSkills.append(
+                        LogicalSkillRecord(
+                            id: operation.logicalId,
+                            sourceId: sourceId,
+                            skillPathInRepo: operation.packagePath,
+                            displayName: operation.displayName
+                        )
+                    )
+                }
+
+                let digests = try SkillTreeIO.fileDigests(ofTree: operation.destination)
+                let destPath = operation.destination.resolvingSymlinksInPath().path
                 let locID = stableID("loc", destPath)
                 snap.locations.removeAll { $0.id == locID || $0.onDiskPath == destPath }
                 snap.locations.append(
                     LocationRecord(
                         id: locID,
-                        skillRootId: rootId,
+                        skillRootId: operation.root.id,
                         onDiskPath: destPath,
-                        displayName: display,
-                        logicalSkillId: logicalID,
+                        displayName: operation.displayName,
+                        logicalSkillId: operation.logicalId,
                         appliedCommitSHA: source.commitSHA,
                         fileDigests: digests
                     )
                 )
             }
-        }
 
-        try SidecarStore.save(snap, to: sidecarRoot)
+            try SidecarStore.save(snap, to: sidecarRoot)
+            committed.compactMap(\.backup).forEach { try? fm.removeItem(at: $0) }
+        } catch {
+            for item in committed.reversed() {
+                try? fm.removeItem(at: item.destination)
+                if let backup = item.backup {
+                    try? fm.moveItem(at: backup, to: item.destination)
+                }
+            }
+            staged.forEach { try? fm.removeItem(at: $0.url) }
+            removeEmptyRoots(createdRoots, fileManager: fm)
+            throw error
+        }
+    }
+
+    private func removeEmptyRoots(_ roots: Set<URL>, fileManager: FileManager) {
+        for root in roots {
+            if (try? fileManager.contentsOfDirectory(atPath: root.path).isEmpty) == true {
+                try? fileManager.removeItem(at: root)
+            }
+        }
     }
 
     public func createSkill(name: String, description: String, skillRootIds: [String]) throws {
