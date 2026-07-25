@@ -1,34 +1,4 @@
 import Foundation
-import CryptoKit
-
-public struct ScanResult: Equatable, Sendable {
-    public let skillsFound: Int
-    public let rootsFound: Int
-    public let detectedAdapterIds: [String]
-    public let inventoryChanged: Bool
-
-    public init(
-        skillsFound: Int,
-        rootsFound: Int,
-        detectedAdapterIds: [String],
-        inventoryChanged: Bool
-    ) {
-        self.skillsFound = skillsFound
-        self.rootsFound = rootsFound
-        self.detectedAdapterIds = detectedAdapterIds
-        self.inventoryChanged = inventoryChanged
-    }
-}
-
-public struct UpdateCheckResult: Equatable, Sendable {
-    public let updatesFound: Int
-    public let dirtyFound: Int
-
-    public init(updatesFound: Int, dirtyFound: Int) {
-        self.updatesFound = updatesFound
-        self.dirtyFound = dirtyFound
-    }
-}
 
 /// Primary control-plane seam: UI and tests drive Skille through this API.
 /// Inject `sidecarRoot`, `homeDirectory`, and `git` (temp dirs + FixtureGitFetch in tests).
@@ -94,10 +64,8 @@ public struct ControlPlane: Sendable {
             .map { source in
                 let logicalIds = Set((logicalBySource[source.id] ?? []).map(\.id))
                 let hasUpdate = snap.locations.contains { loc in
-                    guard let lid = loc.logicalSkillId, logicalIds.contains(lid),
-                          let applied = loc.appliedCommitSHA
-                    else { return false }
-                    return source.commitSHA != applied
+                    guard let lid = loc.logicalSkillId, logicalIds.contains(lid) else { return false }
+                    return Self.needsUpdate(loc, tip: source.commitSHA)
                 }
                 return SkillSourceSummary(
                     id: source.id,
@@ -228,21 +196,7 @@ public struct ControlPlane: Sendable {
             }
 
             for rootId in skillRootIds {
-                let rootPath: String
-                if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
-                    rootPath = existing.path
-                } else if rootId == stableID("root", homeDirectory.appendingPathComponent(".agents/skills").path) {
-                    rootPath = homeDirectory.appendingPathComponent(".agents/skills").path
-                    try fm.createDirectory(
-                        at: URL(fileURLWithPath: rootPath, isDirectory: true),
-                        withIntermediateDirectories: true
-                    )
-                    snap.skillRoots.append(
-                        SkillRootRecord(id: rootId, adapterIds: [], path: rootPath)
-                    )
-                } else {
-                    throw InstallError.rootNotFound(rootId)
-                }
+                let rootPath = try resolveRootPath(rootId, into: &snap)
 
                 let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
                     .appendingPathComponent(folderName, isDirectory: true)
@@ -253,7 +207,7 @@ public struct ControlPlane: Sendable {
                 try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.copyItem(at: from, to: dest)
 
-                let digests = try Self.fileDigests(ofTree: dest)
+                let digests = try SkillTreeIO.fileDigests(ofTree: dest)
                 let destPath = dest.resolvingSymlinksInPath().path
                 let locID = stableID("loc", destPath)
                 snap.locations.removeAll { $0.id == locID || $0.onDiskPath == destPath }
@@ -279,7 +233,6 @@ public struct ControlPlane: Sendable {
         guard !trimmed.isEmpty else { throw AuthoringError.invalidName }
         let folder = sanitizedSkillFolderName(trimmed)
         var snap = try SidecarStore.load(from: sidecarRoot)
-        let fm = FileManager.default
         let body = """
         ---
         name: \(trimmed)
@@ -291,28 +244,13 @@ public struct ControlPlane: Sendable {
         """
 
         for rootId in skillRootIds {
-            let rootPath: String
-            if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
-                rootPath = existing.path
-            } else if rootId == stableID("root", homeDirectory.appendingPathComponent(".agents/skills").path) {
-                rootPath = homeDirectory.appendingPathComponent(".agents/skills").path
-                try fm.createDirectory(
-                    at: URL(fileURLWithPath: rootPath, isDirectory: true),
-                    withIntermediateDirectories: true
-                )
-                snap.skillRoots.append(
-                    SkillRootRecord(id: rootId, adapterIds: [], path: rootPath)
-                )
-            } else {
-                throw InstallError.rootNotFound(rootId)
-            }
-
+            let rootPath = try resolveRootPath(rootId, into: &snap)
             let dest = URL(fileURLWithPath: rootPath, isDirectory: true)
                 .appendingPathComponent(folder, isDirectory: true)
-            if fm.fileExists(atPath: dest.path) {
+            if FileManager.default.fileExists(atPath: dest.path) {
                 throw AuthoringError.alreadyExists(dest.path)
             }
-            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
             try body.write(to: dest.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
         }
         try SidecarStore.save(snap, to: sidecarRoot)
@@ -383,10 +321,9 @@ public struct ControlPlane: Sendable {
             let update = sorted.contains { loc in
                 guard let logicalId = loc.logicalSkillId,
                       let logical = logicalById[logicalId],
-                      let tip = tipBySource[logical.sourceId],
-                      let applied = loc.appliedCommitSHA
+                      let tip = tipBySource[logical.sourceId]
                 else { return false }
-                return tip != applied
+                return Self.needsUpdate(loc, tip: tip)
             }
             return SkillSummary(
                 id: key,
@@ -403,8 +340,15 @@ public struct ControlPlane: Sendable {
 
     public static func isDirty(_ location: LocationRecord) -> Bool {
         guard !location.fileDigests.isEmpty else { return false }
-        let current = (try? fileDigests(ofTree: URL(fileURLWithPath: location.onDiskPath, isDirectory: true))) ?? []
+        let current = (try? SkillTreeIO.fileDigests(
+            ofTree: URL(fileURLWithPath: location.onDiskPath, isDirectory: true)
+        )) ?? []
         return current != location.fileDigests
+    }
+
+    public static func needsUpdate(_ location: LocationRecord, tip: String) -> Bool {
+        guard let applied = location.appliedCommitSHA else { return false }
+        return tip != applied
     }
 
     @discardableResult
@@ -430,8 +374,7 @@ public struct ControlPlane: Sendable {
             if let logicalId = loc.logicalSkillId,
                let logical = logicalById[logicalId],
                let tip = tipBySource[logical.sourceId],
-               let applied = loc.appliedCommitSHA,
-               tip != applied
+               Self.needsUpdate(loc, tip: tip)
             {
                 updates += 1
             }
@@ -443,15 +386,7 @@ public struct ControlPlane: Sendable {
 
     public func prepareUpdateReview(locationId: String) throws -> UpdateReview {
         let snap = try SidecarStore.load(from: sidecarRoot)
-        guard let loc = snap.locations.first(where: { $0.id == locationId }) else {
-            throw UpdateReviewError.locationNotFound
-        }
-        guard let logicalId = loc.logicalSkillId,
-              let logical = snap.logicalSkills.first(where: { $0.id == logicalId }),
-              let source = snap.sources.first(where: { $0.id == logical.sourceId })
-        else {
-            throw UpdateReviewError.noProvenance
-        }
+        let (loc, logical, source) = try provenance(locationId: locationId, in: snap)
 
         let remoteRoot = URL(fileURLWithPath: source.cachePath, isDirectory: true)
             .appendingPathComponent(logical.skillPathInRepo, isDirectory: true)
@@ -460,7 +395,6 @@ public struct ControlPlane: Sendable {
             throw UpdateReviewError.remoteMissing
         }
 
-        let files = try Self.diffTrees(local: localRoot, remote: remoteRoot)
         return UpdateReview(
             locationId: locationId,
             displayName: loc.displayName,
@@ -468,7 +402,7 @@ public struct ControlPlane: Sendable {
             proposedCommitSHA: source.commitSHA,
             appliedCommitSHA: loc.appliedCommitSHA,
             isDirty: Self.isDirty(loc),
-            files: files
+            files: try SkillTreeIO.diffTrees(local: localRoot, remote: remoteRoot)
         )
     }
 
@@ -478,12 +412,7 @@ public struct ControlPlane: Sendable {
             throw UpdateReviewError.locationNotFound
         }
         var loc = snap.locations[index]
-        guard let logicalId = loc.logicalSkillId,
-              let logical = snap.logicalSkills.first(where: { $0.id == logicalId }),
-              let source = snap.sources.first(where: { $0.id == logical.sourceId })
-        else {
-            throw UpdateReviewError.noProvenance
-        }
+        let (_, logical, source) = try provenance(locationId: locationId, in: snap)
 
         if Self.isDirty(loc) && !discardLocal {
             throw UpdateReviewError.dirtyRequiresDiscard
@@ -500,17 +429,14 @@ public struct ControlPlane: Sendable {
         try fm.copyItem(at: remoteRoot, to: localRoot)
 
         loc.appliedCommitSHA = source.commitSHA
-        loc.fileDigests = try Self.fileDigests(ofTree: localRoot)
+        loc.fileDigests = try SkillTreeIO.fileDigests(ofTree: localRoot)
         snap.locations[index] = loc
         try SidecarStore.save(snap, to: sidecarRoot)
     }
 
     public func rejectUpdate(locationId: String) throws {
-        let snap = try SidecarStore.load(from: sidecarRoot)
-        guard snap.locations.contains(where: { $0.id == locationId }) else {
-            throw UpdateReviewError.locationNotFound
-        }
-        // No disk or last-applied changes.
+        // AC: Reject leaves disk and last-applied unchanged.
+        _ = locationId
     }
 
     public func locationsNeedingUpdate(sourceId: String) throws -> [UpdateChecklistItem] {
@@ -521,8 +447,7 @@ public struct ControlPlane: Sendable {
         let logicalIds = Set(snap.logicalSkills.filter { $0.sourceId == sourceId }.map(\.id))
         return snap.locations.compactMap { loc -> UpdateChecklistItem? in
             guard let lid = loc.logicalSkillId, logicalIds.contains(lid),
-                  let applied = loc.appliedCommitSHA,
-                  source.commitSHA != applied
+                  Self.needsUpdate(loc, tip: source.commitSHA)
             else { return nil }
             return UpdateChecklistItem(
                 locationId: loc.id,
@@ -612,120 +537,19 @@ public struct ControlPlane: Sendable {
         loc = snap.locations[locIndex]
         loc.logicalSkillId = logicalID
         loc.appliedCommitSHA = sourceRecord.commitSHA
-        loc.fileDigests = try Self.fileDigests(
+        loc.fileDigests = try SkillTreeIO.fileDigests(
             ofTree: URL(fileURLWithPath: loc.onDiskPath, isDirectory: true)
         )
         snap.locations[locIndex] = loc
         try SidecarStore.save(snap, to: sidecarRoot)
     }
 
-    /// Optional suggestion only — never auto-attaches.
     public func suggestedGitOrigin(forLocationPath path: String) -> String? {
-        let dir = URL(fileURLWithPath: path, isDirectory: true)
-        var cursor = dir
-        for _ in 0..<6 {
-            let gitDir = cursor.appendingPathComponent(".git")
-            if FileManager.default.fileExists(atPath: gitDir.path) {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                proc.arguments = ["-C", cursor.path, "remote", "get-url", "origin"]
-                let pipe = Pipe()
-                proc.standardOutput = pipe
-                proc.standardError = Pipe()
-                try? proc.run()
-                proc.waitUntilExit()
-                guard proc.terminationStatus == 0 else { return nil }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let url = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return (url?.isEmpty == false) ? url : nil
-            }
-            let parent = cursor.deletingLastPathComponent()
-            if parent.path == cursor.path { break }
-            cursor = parent
-        }
-        return nil
+        SkilleControl.suggestedGitOrigin(startingAt: path)
     }
 
     public static func diffTrees(local: URL, remote: URL) throws -> [UpdateFileChange] {
-        let localDigests = Dictionary(
-            uniqueKeysWithValues: (try fileDigests(ofTree: local)).map { ($0.relPath, $0) }
-        )
-        let remoteDigests = Dictionary(
-            uniqueKeysWithValues: (try fileDigests(ofTree: remote)).map { ($0.relPath, $0) }
-        )
-        let allPaths = Set(localDigests.keys).union(remoteDigests.keys).sorted()
-        var changes: [UpdateFileChange] = []
-
-        for path in allPaths {
-            let localHash = localDigests[path]?.sha256
-            let remoteHash = remoteDigests[path]?.sha256
-            if localHash == remoteHash { continue }
-
-            let status: UpdateFileStatus
-            if localHash == nil { status = .added }
-            else if remoteHash == nil { status = .deleted }
-            else { status = .modified }
-
-            let localURL = local.appendingPathComponent(path)
-            let remoteURL = remote.appendingPathComponent(path)
-            let localIsText = FileManager.default.fileExists(atPath: localURL.path)
-                ? looksLikeText(url: localURL) : true
-            let remoteIsText = FileManager.default.fileExists(atPath: remoteURL.path)
-                ? looksLikeText(url: remoteURL) : true
-            let isText = localIsText && remoteIsText
-
-            var textDiff: String?
-            var oldSize: Int?
-            var newSize: Int?
-
-            if isText {
-                let oldText = (try? String(contentsOf: localURL, encoding: .utf8)) ?? ""
-                let newText = (try? String(contentsOf: remoteURL, encoding: .utf8)) ?? ""
-                textDiff = Self.unifiedDiff(old: oldText, new: newText, path: path)
-            } else {
-                oldSize = fileSize(localURL)
-                newSize = fileSize(remoteURL)
-            }
-
-            changes.append(
-                UpdateFileChange(
-                    relativePath: path,
-                    status: status,
-                    textDiff: textDiff,
-                    oldByteSize: oldSize,
-                    newByteSize: newSize
-                )
-            )
-        }
-        return changes
-    }
-
-    private static func fileSize(_ url: URL) -> Int? {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? NSNumber
-        else { return nil }
-        return size.intValue
-    }
-
-    private static func unifiedDiff(old: String, new: String, path: String) -> String {
-        // ponytail: line-oriented mini diff; upgrade to lib if review UX needs hunks
-        let oldLines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let newLines = new.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        var out = "--- a/\(path)\n+++ b/\(path)\n"
-        let maxCount = max(oldLines.count, newLines.count)
-        for i in 0..<maxCount {
-            let o = i < oldLines.count ? oldLines[i] : nil
-            let n = i < newLines.count ? newLines[i] : nil
-            if o == n, let o {
-                out += " \(o)\n"
-            } else {
-                if let o { out += "-\(o)\n" }
-                if let n { out += "+\(n)\n" }
-            }
-        }
-        return out
+        try SkillTreeIO.diffTrees(local: local, remote: remote)
     }
 
     @discardableResult
@@ -895,11 +719,41 @@ public struct ControlPlane: Sendable {
         "\(prefix):\(path)"
     }
 
+    private func provenance(
+        locationId: String,
+        in snap: SidecarSnapshot
+    ) throws -> (LocationRecord, LogicalSkillRecord, SkillSourceRecord) {
+        guard let loc = snap.locations.first(where: { $0.id == locationId }) else {
+            throw UpdateReviewError.locationNotFound
+        }
+        guard let logicalId = loc.logicalSkillId,
+              let logical = snap.logicalSkills.first(where: { $0.id == logicalId }),
+              let source = snap.sources.first(where: { $0.id == logical.sourceId })
+        else {
+            throw UpdateReviewError.noProvenance
+        }
+        return (loc, logical, source)
+    }
+
+    private func resolveRootPath(_ rootId: String, into snap: inout SidecarSnapshot) throws -> String {
+        if let existing = snap.skillRoots.first(where: { $0.id == rootId }) {
+            return existing.path
+        }
+        let agentsPath = homeDirectory.appendingPathComponent(".agents/skills").path
+        guard rootId == stableID("root", agentsPath) else {
+            throw InstallError.rootNotFound(rootId)
+        }
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: agentsPath, isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        snap.skillRoots.append(SkillRootRecord(id: rootId, adapterIds: [], path: agentsPath))
+        return agentsPath
+    }
+
     private func discoverPackages(in root: URL) -> [(path: String, name: String)] {
         var results: [(path: String, name: String)] = []
-        let fm = FileManager.default
-        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
-        guard let enumerator = fm.enumerator(
+        guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
@@ -908,398 +762,36 @@ public struct ControlPlane: Sendable {
         }
         for case let item as URL in enumerator {
             guard item.lastPathComponent == "SKILL.md" else { continue }
-            let dir = item.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
-            let dirPath = dir.path
-            let rel: String
-            if dirPath == rootPath {
-                rel = "."
-            } else if dirPath.hasPrefix(rootPath + "/") {
-                rel = String(dirPath.dropFirst(rootPath.count + 1))
-            } else {
-                rel = dir.lastPathComponent
-            }
-            let name = displayName(from: item, fallback: dir.lastPathComponent)
-            results.append((rel, name))
+            let dir = item.deletingLastPathComponent()
+            results.append((
+                SkillTreeIO.relativePath(of: dir, under: root),
+                displayName(from: item, fallback: dir.lastPathComponent)
+            ))
         }
         return results
     }
 
+    /// Soft cap for loading text into the in-app editor buffer (~512 KiB).
+    public static var textBufferLimitBytes: Int { SkillTreeIO.textBufferLimitBytes }
+
     public static func fileDigests(ofTree root: URL) throws -> [FileDigestRecord] {
-        var digests: [FileDigestRecord] = []
-        let fm = FileManager.default
-        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
-        guard let enumerator = fm.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-        for case let item as URL in enumerator {
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: item.path, isDirectory: &isDir), !isDir.boolValue else {
-                continue
-            }
-            let data = try Data(contentsOf: item)
-            let hash = SHA256.hash(data: data)
-            let hex = hash.map { String(format: "%02x", $0) }.joined()
-            let itemPath = item.resolvingSymlinksInPath().standardizedFileURL.path
-            let rel: String
-            if itemPath.hasPrefix(rootPath + "/") {
-                rel = String(itemPath.dropFirst(rootPath.count + 1))
-            } else {
-                rel = item.lastPathComponent
-            }
-            digests.append(FileDigestRecord(relPath: rel, sha256: hex))
-        }
-        return digests.sorted { $0.relPath < $1.relPath }
+        try SkillTreeIO.fileDigests(ofTree: root)
     }
 
-    /// Soft cap for loading text into the in-app editor buffer (~512 KiB).
-    public static let textBufferLimitBytes = 512 * 1024
-
     public func listSkillFiles(at skillRootPath: String) throws -> [SkillFileEntry] {
-        let root = URL(fileURLWithPath: skillRootPath, isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        let rootPath = root.path
-        guard FileManager.default.fileExists(atPath: rootPath) else {
-            throw EditorError.rootMissing
-        }
-        var entries: [SkillFileEntry] = []
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-        for case let item as URL in enumerator {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir),
-                  !isDir.boolValue
-            else { continue }
-            let itemPath = item.resolvingSymlinksInPath().standardizedFileURL.path
-            let rel: String
-            if itemPath.hasPrefix(rootPath + "/") {
-                rel = String(itemPath.dropFirst(rootPath.count + 1))
-            } else {
-                rel = item.lastPathComponent
-            }
-            entries.append(SkillFileEntry(relativePath: rel))
-        }
-        return entries.sorted { $0.relativePath < $1.relativePath }
+        try SkillTreeIO.listFiles(at: skillRootPath)
     }
 
     public func readTextFile(at skillRootPath: String, relativePath: String) throws -> SkillFileContent {
-        let url = try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
-
-        if !Self.looksLikeText(url: url) {
-            return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .nonText)
-        }
-        if size > Self.textBufferLimitBytes {
-            return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .tooLarge)
-        }
-        let text = try String(contentsOf: url, encoding: .utf8)
-        return SkillFileContent(relativePath: relativePath, byteSize: size, kind: .text(text))
+        try SkillTreeIO.readText(at: skillRootPath, relativePath: relativePath)
     }
 
     public func writeTextFile(at skillRootPath: String, relativePath: String, content: String) throws {
-        let url = try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
-        try content.write(to: url, atomically: true, encoding: .utf8)
+        try SkillTreeIO.writeText(at: skillRootPath, relativePath: relativePath, content: content)
     }
 
     public func absoluteFileURL(skillRootPath: String, relativePath: String) throws -> URL {
-        try resolvedFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
-    }
-
-    private func resolvedFileURL(skillRootPath: String, relativePath: String) throws -> URL {
-        let root = URL(fileURLWithPath: skillRootPath, isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        let url = root.appendingPathComponent(relativePath).standardizedFileURL
-        let rootPath = root.path
-        guard url.path == rootPath || url.path.hasPrefix(rootPath + "/") else {
-            throw EditorError.pathEscape
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw EditorError.fileMissing
-        }
-        return url
-    }
-
-    private static func looksLikeText(url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        let textExts: Set<String> = [
-            "md", "txt", "json", "yml", "yaml", "toml", "swift", "py", "js", "ts",
-            "sh", "zsh", "bash", "css", "html", "xml", "csv", "svg", "gitignore",
-        ]
-        if textExts.contains(ext) || url.lastPathComponent == "SKILL.md" {
-            return true
-        }
-        if ext.isEmpty {
-            // Heuristic: no NUL in first 512 bytes
-            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-            defer { try? handle.close() }
-            let sample = handle.readData(ofLength: 512)
-            return !sample.contains(0)
-        }
-        return false
+        try SkillTreeIO.absoluteFileURL(skillRootPath: skillRootPath, relativePath: relativePath)
     }
 }
 
-public enum InstallError: Error, Equatable {
-    case sourceNotFound
-    case packageNotFound(String)
-    case rootNotFound(String)
-}
-
-public enum AuthoringError: Error, Equatable {
-    case invalidName
-    case alreadyExists(String)
-}
-
-public enum UpdateReviewError: Error, Equatable {
-    case locationNotFound
-    case noProvenance
-    case remoteMissing
-    case dirtyRequiresDiscard
-}
-
-public enum AttachSourceError: Error, Equatable {
-    case locationNotFound
-    case notOrphan
-    case confirmationRequired
-}
-
-public enum UpdateFileStatus: String, Equatable, Sendable {
-    case added
-    case modified
-    case deleted
-}
-
-public struct UpdateFileChange: Identifiable, Equatable, Sendable {
-    public var id: String { relativePath }
-    public let relativePath: String
-    public let status: UpdateFileStatus
-    public let textDiff: String?
-    public let oldByteSize: Int?
-    public let newByteSize: Int?
-
-    public init(
-        relativePath: String,
-        status: UpdateFileStatus,
-        textDiff: String?,
-        oldByteSize: Int?,
-        newByteSize: Int?
-    ) {
-        self.relativePath = relativePath
-        self.status = status
-        self.textDiff = textDiff
-        self.oldByteSize = oldByteSize
-        self.newByteSize = newByteSize
-    }
-}
-
-public struct UpdateReview: Equatable, Sendable {
-    public let locationId: String
-    public let displayName: String
-    public let onDiskPath: String
-    public let proposedCommitSHA: String
-    public let appliedCommitSHA: String?
-    public let isDirty: Bool
-    public let files: [UpdateFileChange]
-
-    public init(
-        locationId: String,
-        displayName: String,
-        onDiskPath: String,
-        proposedCommitSHA: String,
-        appliedCommitSHA: String?,
-        isDirty: Bool,
-        files: [UpdateFileChange]
-    ) {
-        self.locationId = locationId
-        self.displayName = displayName
-        self.onDiskPath = onDiskPath
-        self.proposedCommitSHA = proposedCommitSHA
-        self.appliedCommitSHA = appliedCommitSHA
-        self.isDirty = isDirty
-        self.files = files
-    }
-}
-
-public struct UpdateChecklistItem: Identifiable, Equatable, Sendable {
-    public var id: String { locationId }
-    public let locationId: String
-    public let displayName: String
-    public let onDiskPath: String
-    public let isDirty: Bool
-
-    public init(locationId: String, displayName: String, onDiskPath: String, isDirty: Bool) {
-        self.locationId = locationId
-        self.displayName = displayName
-        self.onDiskPath = onDiskPath
-        self.isDirty = isDirty
-    }
-}
-
-public enum EditorError: Error, Equatable {
-    case rootMissing
-    case fileMissing
-    case pathEscape
-}
-
-public struct SkillFileEntry: Identifiable, Equatable, Sendable {
-    public var id: String { relativePath }
-    public let relativePath: String
-
-    public init(relativePath: String) {
-        self.relativePath = relativePath
-    }
-}
-
-public enum SkillFileKind: Equatable, Sendable {
-    case text(String)
-    case nonText
-    case tooLarge
-}
-
-public struct SkillFileContent: Equatable, Sendable {
-    public let relativePath: String
-    public let byteSize: Int
-    public let kind: SkillFileKind
-
-    public init(relativePath: String, byteSize: Int, kind: SkillFileKind) {
-        self.relativePath = relativePath
-        self.byteSize = byteSize
-        self.kind = kind
-    }
-}
-
-public struct SkillSummary: Identifiable, Equatable, Sendable {
-    public let id: String
-    public let displayName: String
-    public let locationCount: Int
-    public let isOrphan: Bool
-    public let hasUpdate: Bool
-    public let isDirty: Bool
-    public let isFromProject: Bool
-
-    public init(
-        id: String,
-        displayName: String,
-        locationCount: Int = 1,
-        isOrphan: Bool = true,
-        hasUpdate: Bool = false,
-        isDirty: Bool = false,
-        isFromProject: Bool = false
-    ) {
-        self.id = id
-        self.displayName = displayName
-        self.locationCount = locationCount
-        self.isOrphan = isOrphan
-        self.hasUpdate = hasUpdate
-        self.isDirty = isDirty
-        self.isFromProject = isFromProject
-    }
-}
-
-public struct LocationSummary: Identifiable, Equatable, Sendable {
-    public let id: String
-    public let onDiskPath: String
-    public let skillRootPath: String
-    public let adapterIds: [String]
-    public let appliedCommitSHA: String?
-    public let fileDigests: [FileDigestRecord]
-
-    public init(
-        id: String,
-        onDiskPath: String,
-        skillRootPath: String,
-        adapterIds: [String],
-        appliedCommitSHA: String? = nil,
-        fileDigests: [FileDigestRecord] = []
-    ) {
-        self.id = id
-        self.onDiskPath = onDiskPath
-        self.skillRootPath = skillRootPath
-        self.adapterIds = adapterIds
-        self.appliedCommitSHA = appliedCommitSHA
-        self.fileDigests = fileDigests
-    }
-}
-
-public struct InstallRootOption: Identifiable, Equatable, Sendable {
-    public let id: String
-    public let path: String
-    public let isDefaultSuggestion: Bool
-
-    public init(id: String, path: String, isDefaultSuggestion: Bool) {
-        self.id = id
-        self.path = path
-        self.isDefaultSuggestion = isDefaultSuggestion
-    }
-}
-
-public struct SkillDetail: Equatable, Sendable {
-    public let summary: SkillSummary
-    public let locations: [LocationSummary]
-
-    public init(summary: SkillSummary, locations: [LocationSummary]) {
-        self.summary = summary
-        self.locations = locations
-    }
-}
-
-public struct SkillSourceSummary: Identifiable, Equatable, Sendable {
-    public let id: String
-    public let displayName: String
-    public let normalizedUrl: String
-    public let branch: String
-    public let hasUpdate: Bool
-
-    public init(
-        id: String,
-        displayName: String,
-        normalizedUrl: String,
-        branch: String,
-        hasUpdate: Bool = false
-    ) {
-        self.id = id
-        self.displayName = displayName
-        self.normalizedUrl = normalizedUrl
-        self.branch = branch
-        self.hasUpdate = hasUpdate
-    }
-}
-
-public enum PackageInstallStatus: String, Equatable, Sendable {
-    case notInstalled
-    case installed
-}
-
-public struct SourcePackage: Identifiable, Equatable, Sendable {
-    public var id: String { pathInRepo }
-    public let pathInRepo: String
-    public let displayName: String
-    public let installStatus: PackageInstallStatus
-
-    public init(pathInRepo: String, displayName: String, installStatus: PackageInstallStatus) {
-        self.pathInRepo = pathInRepo
-        self.displayName = displayName
-        self.installStatus = installStatus
-    }
-}
-
-public struct SourceDetail: Equatable, Sendable {
-    public let summary: SkillSourceSummary
-    public let packages: [SourcePackage]
-
-    public init(summary: SkillSourceSummary, packages: [SourcePackage]) {
-        self.summary = summary
-        self.packages = packages
-    }
-}
