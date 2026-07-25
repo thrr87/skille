@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import SkilleControl
 
 /// Main window: Sources | Skills | Projects. Skills is home.
@@ -18,11 +19,12 @@ struct LibraryShell: View {
             SkillsHome(
                 controlPlane: controlPlane,
                 skills: skills,
-                selection: $selectedSkillID
+                selection: $selectedSkillID,
+                onAddProject: { addProject() }
             )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
-            ProjectsStub()
+            ProjectsTab(controlPlane: controlPlane, onChanged: { runScan(manual: true) })
                 .tabItem { Label("Projects", systemImage: "folder") }
                 .tag(LibraryTab.projects)
         }
@@ -82,6 +84,21 @@ struct LibraryShell: View {
             withAnimation(.easeIn(duration: 0.15)) { toast = nil }
         }
     }
+
+    private func addProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try controlPlane.addProject(path: url.path)
+            runScan(manual: true)
+        } catch {
+            showToast("Could not add project: \(error.localizedDescription)")
+        }
+    }
 }
 
 private enum LibraryTab: Hashable {
@@ -92,10 +109,11 @@ struct SkillsHome: View {
     let controlPlane: ControlPlane
     let skills: [SkillSummary]
     @Binding var selection: String?
+    var onAddProject: () -> Void = {}
 
     var body: some View {
         if skills.isEmpty {
-            SkillsEmptyState()
+            SkillsEmptyState(onAddProject: onAddProject)
         } else {
             NavigationSplitView {
                 List(skills, selection: $selection) { skill in
@@ -178,10 +196,19 @@ struct SkillRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(skill.displayName)
                     .font(.body.weight(.medium))
-                if skill.isOrphan {
-                    Text("Orphan")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    if skill.isOrphan {
+                        Text("Orphan")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if skill.isFromProject {
+                        Text("Project")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
                 }
             }
             Spacer()
@@ -197,6 +224,8 @@ struct SkillRow: View {
 }
 
 struct SkillsEmptyState: View {
+    var onAddProject: () -> Void = {}
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "square.stack.3d.up.slash")
@@ -214,13 +243,74 @@ struct SkillsEmptyState: View {
             HStack(spacing: 12) {
                 Button("Add Source") {}
                     .disabled(true)
-                Button("Add Project") {}
-                    .disabled(true)
+                Button("Add Project", action: onAddProject)
             }
             .controlSize(.large)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(32)
+    }
+}
+
+private struct ProjectsTab: View {
+    let controlPlane: ControlPlane
+    var onChanged: () -> Void
+    @State private var projects: [ProjectRecord] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Projects")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button("Add…") { add() }
+            }
+            .padding(16)
+            if projects.isEmpty {
+                ContentUnavailableView(
+                    "No projects",
+                    systemImage: "folder",
+                    description: Text("Add a project folder to include its skill roots in Scan.")
+                )
+            } else {
+                List {
+                    ForEach(projects) { project in
+                        HStack {
+                            Text(project.rootPath)
+                                .font(.body.monospaced())
+                                .textSelection(.enabled)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                remove(project)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { reload() }
+    }
+
+    private func reload() {
+        projects = controlPlane.listProjects()
+    }
+
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? controlPlane.addProject(path: url.path)
+        reload()
+        onChanged()
+    }
+
+    private func remove(_ project: ProjectRecord) {
+        try? controlPlane.removeProject(id: project.id)
+        reload()
+        onChanged()
     }
 }
 
@@ -230,16 +320,6 @@ private struct SourcesStub: View {
             "Sources",
             systemImage: "shippingbox",
             description: Text("Add a Skill Source to install from git.")
-        )
-    }
-}
-
-private struct ProjectsStub: View {
-    var body: some View {
-        ContentUnavailableView(
-            "Projects",
-            systemImage: "folder",
-            description: Text("Add a project folder to include its skill roots.")
         )
     }
 }
