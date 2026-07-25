@@ -13,6 +13,7 @@ struct LibraryShell: View {
     @State private var toast: String?
     @State private var isScanning = false
     @State private var showAddSource = false
+    @State private var installSourceID: String?
 
     var body: some View {
         TabView(selection: $tab) {
@@ -20,7 +21,8 @@ struct LibraryShell: View {
                 controlPlane: controlPlane,
                 sources: sources,
                 selection: $selectedSourceID,
-                onAddSource: { showAddSource = true }
+                onAddSource: { showAddSource = true },
+                onInstall: { installSourceID = $0 }
             )
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
@@ -50,6 +52,19 @@ struct LibraryShell: View {
         .sheet(isPresented: $showAddSource) {
             AddSourceSheet { url, branch in
                 addSource(url: url, branch: branch)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { installSourceID != nil },
+            set: { if !$0 { installSourceID = nil } }
+        )) {
+            if let installSourceID {
+                InstallSheet(controlPlane: controlPlane, sourceId: installSourceID) {
+                    runScan(manual: true)
+                    skills = controlPlane.listSkills()
+                    sources = controlPlane.listSources()
+                    showToast("Install complete")
+                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -346,6 +361,7 @@ private struct SourcesHome: View {
     let sources: [SkillSourceSummary]
     @Binding var selection: String?
     var onAddSource: () -> Void
+    var onInstall: (String) -> Void
 
     var body: some View {
         if sources.isEmpty {
@@ -372,7 +388,7 @@ private struct SourcesHome: View {
                 .navigationTitle("Sources")
             } detail: {
                 if let selection, let detail = controlPlane.sourceDetail(id: selection) {
-                    SourceInspector(detail: detail)
+                    SourceInspector(detail: detail, onInstall: { onInstall(selection) })
                 } else {
                     ContentUnavailableView(
                         "Select a source",
@@ -387,6 +403,7 @@ private struct SourcesHome: View {
 
 private struct SourceInspector: View {
     let detail: SourceDetail
+    var onInstall: () -> Void
 
     var body: some View {
         List {
@@ -412,13 +429,89 @@ private struct SourceInspector: View {
                 }
             }
             Section {
-                Button("Install…") {}
-                    .disabled(true)
+                Button("Install…", action: onInstall)
                 Button("Update…") {}
                     .disabled(true)
             }
         }
         .navigationTitle(detail.summary.displayName)
+    }
+}
+
+private struct InstallSheet: View {
+    let controlPlane: ControlPlane
+    let sourceId: String
+    var onDone: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPackages: Set<String> = []
+    @State private var selectedRoots: Set<String> = []
+    @State private var errorText: String?
+
+    private var detail: SourceDetail? { controlPlane.sourceDetail(id: sourceId) }
+    private var roots: [InstallRootOption] { controlPlane.availableInstallRoots() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Install")
+                .font(.title2.weight(.semibold))
+            if let detail {
+                Text(detail.summary.displayName)
+                    .foregroundStyle(.secondary)
+                Text("Packages")
+                    .font(.headline)
+                List(detail.packages, selection: $selectedPackages) { pkg in
+                    Text("\(pkg.displayName) (\(pkg.pathInRepo))")
+                        .tag(pkg.pathInRepo)
+                }
+                .frame(minHeight: 120)
+                Text("Skill roots")
+                    .font(.headline)
+                List(roots, selection: $selectedRoots) { root in
+                    HStack {
+                        Text(root.path).font(.body.monospaced())
+                        if root.isDefaultSuggestion {
+                            Text("default")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tag(root.id)
+                }
+                .frame(minHeight: 100)
+                .onAppear {
+                    selectedRoots = Set(roots.filter(\.isDefaultSuggestion).map(\.id))
+                    if selectedRoots.isEmpty, let first = roots.first {
+                        selectedRoots = [first.id]
+                    }
+                }
+            }
+            if let errorText {
+                Text(errorText).foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Install") { perform() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selectedPackages.isEmpty || selectedRoots.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 480)
+    }
+
+    private func perform() {
+        do {
+            try controlPlane.install(
+                sourceId: sourceId,
+                packagePaths: Array(selectedPackages),
+                skillRootIds: Array(selectedRoots)
+            )
+            onDone()
+            dismiss()
+        } catch {
+            errorText = error.localizedDescription
+        }
     }
 }
 
