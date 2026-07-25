@@ -40,6 +40,7 @@ struct ScanTests {
         #expect(skills[0].displayName == "demo-skill")
         #expect(skills[0].isOrphan == true)
         #expect(skills[0].locationCount == 1)
+        #expect(skills[0].adapterIds.contains("cursor"))
     }
 
     @Test func scanDetectsAdapterViaConfigHomeEvenWithoutSkills() throws {
@@ -80,6 +81,104 @@ struct ScanTests {
 
         #expect(second.inventoryChanged == false)
         #expect(plane.listSkills().count == 1)
+    }
+
+    @Test func scanDiscoversNestedPluginSkillsAndSkillsCursor() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".cursor/skills-cursor",
+            name: "built-in",
+            body: """
+            ---
+            name: built-in
+            description: Cursor built-in
+            ---
+            # Built-in
+            """
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".cursor/plugins/cache/vendor/kit/abc123/skills",
+            name: "thermo-nuclear-code-quality-review",
+            body: """
+            ---
+            name: thermo-nuclear-code-quality-review
+            description: Strict review
+            ---
+            # Review
+            """
+        )
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home
+        )
+        let result = try plane.scan()
+        let names = Set(plane.listSkills().map(\.displayName))
+
+        #expect(result.skillsFound == 2)
+        #expect(names.contains("built-in"))
+        #expect(names.contains("thermo-nuclear-code-quality-review"))
+    }
+
+    @Test func sharedAgentsRootAttributesMultipleAdapters() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        try fixture.writeSkill(relativeRoot: ".agents/skills", name: "shared", body: "# Shared\n")
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".codex"),
+            withIntermediateDirectories: true
+        )
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home
+        )
+        _ = try plane.scan()
+        let skill = try #require(plane.listSkills().first)
+        #expect(skill.locationCount == 1)
+        #expect(Set(skill.adapterIds).isSuperset(of: ["cursor", "codex"]))
+
+        let detail = try #require(plane.skillDetail(id: skill.id))
+        #expect(Set(detail.locations[0].adapterIds).isSuperset(of: ["cursor", "codex"]))
+    }
+
+    @Test func scanUnquotesYAMLFrontmatterName() throws {
+        let fixture = try TestFixture()
+        defer { fixture.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: fixture.home.appendingPathComponent(".cursor"),
+            withIntermediateDirectories: true
+        )
+        try fixture.writeSkill(
+            relativeRoot: ".cursor/skills",
+            name: "doc",
+            body: """
+            ---
+            name: "doc"
+            description: quoted name
+            ---
+            # Doc
+            """
+        )
+
+        let plane = try ControlPlane(
+            sidecarRoot: fixture.sidecar,
+            homeDirectory: fixture.home
+        )
+        _ = try plane.scan()
+        #expect(plane.listSkills().map(\.displayName) == ["doc"])
     }
 }
 

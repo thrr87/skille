@@ -8,14 +8,27 @@ format.
 Product language: [CONTEXT.md](CONTEXT.md). Spec and prototypes:
 [`.scratch/skille-spec/`](.scratch/skille-spec/).
 
-## Build & run
+## Install (recommended)
+
+Builds a real `Skille.app` (Dock icon, menu bar, reopenable) into
+`~/Applications`:
+
+```bash
+./scripts/install-app.sh
+open ~/Applications/Skille.app
+```
+
+Requires macOS 14+ and Xcode / Swift 6.
+
+## Dev run (no Dock icon)
 
 ```bash
 swift build
 swift run Skille
 ```
 
-Requires macOS 14+ and Xcode / Swift 6.
+`swift run` launches a bare executable — fine for quick checks, but it will not
+appear as a normal Mac app in the Dock or Apple menu.
 
 ## Control-plane tests
 

@@ -14,6 +14,6 @@ struct SkilleApp: App {
         WindowGroup {
             LibraryShell(controlPlane: controlPlane)
         }
-        .defaultSize(width: 960, height: 640)
+        .defaultSize(width: 1100, height: 720)
     }
 }

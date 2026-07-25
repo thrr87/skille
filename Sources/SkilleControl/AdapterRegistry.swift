@@ -9,6 +9,22 @@ public struct AdapterDescriptor: Sendable, Equatable {
     public let globalSkillRoots: [String]
     /// Project-relative skill roots (only scanned for user-added Projects).
     public let projectSkillRoots: [String]
+    /// Roots walked recursively for nested packages (plugin caches, etc.).
+    public let deepGlobalSkillRoots: [String]
+
+    public init(
+        id: String,
+        detectRelativePaths: [String],
+        globalSkillRoots: [String],
+        projectSkillRoots: [String],
+        deepGlobalSkillRoots: [String] = []
+    ) {
+        self.id = id
+        self.detectRelativePaths = detectRelativePaths
+        self.globalSkillRoots = globalSkillRoots
+        self.projectSkillRoots = projectSkillRoots
+        self.deepGlobalSkillRoots = deepGlobalSkillRoots
+    }
 }
 
 public enum AdapterRegistry {
@@ -16,14 +32,16 @@ public enum AdapterRegistry {
         AdapterDescriptor(
             id: "cursor",
             detectRelativePaths: [".cursor"],
-            globalSkillRoots: [".agents/skills", ".cursor/skills"],
-            projectSkillRoots: [".agents/skills", ".cursor/skills"]
+            globalSkillRoots: [".agents/skills", ".cursor/skills", ".cursor/skills-cursor"],
+            projectSkillRoots: [".agents/skills", ".cursor/skills"],
+            deepGlobalSkillRoots: [".cursor/plugins"]
         ),
         AdapterDescriptor(
             id: "claude-code",
             detectRelativePaths: [".claude"],
             globalSkillRoots: [".claude/skills"],
-            projectSkillRoots: [".claude/skills"]
+            projectSkillRoots: [".claude/skills"],
+            deepGlobalSkillRoots: [".claude/plugins"]
         ),
         AdapterDescriptor(
             id: "codex",
@@ -71,5 +89,23 @@ public enum AdapterRegistry {
     /// Distinct project-relative roots across all adapters (no full-disk crawl).
     public static var allProjectSkillRoots: [String] {
         Array(Set(v1.flatMap(\.projectSkillRoots))).sorted()
+    }
+
+    public static func displayName(forAdapterId id: String) -> String {
+        switch id {
+        case "cursor": return "Cursor"
+        case "claude-code": return "Claude Code"
+        case "codex": return "Codex"
+        case "gemini-cli": return "Gemini CLI"
+        case "opencode": return "OpenCode"
+        case "goose": return "Goose"
+        case "copilot": return "Copilot"
+        case "amp": return "Amp"
+        default: return id
+        }
+    }
+
+    public static func displayNames(forAdapterIds ids: [String]) -> String {
+        ids.map(displayName(forAdapterId:)).joined(separator: " · ")
     }
 }

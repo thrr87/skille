@@ -287,7 +287,8 @@ public struct ControlPlane: Sendable {
                 displayName: locs[0].displayName,
                 locationCount: locs.count,
                 isOrphan: locs.allSatisfy { $0.logicalSkillId == nil },
-                isFromProject: locs.contains { roots[$0.skillRootId]?.scope == "project" }
+                isFromProject: locs.contains { roots[$0.skillRootId]?.scope == "project" },
+                adapterIds: Self.unionAdapterIds(for: locs, roots: roots)
             )
         let locations = locs.map { loc in
             let root = roots[loc.skillRootId]
@@ -332,10 +333,24 @@ public struct ControlPlane: Sendable {
                 isOrphan: sorted.allSatisfy { $0.logicalSkillId == nil },
                 hasUpdate: update,
                 isDirty: dirty,
-                isFromProject: fromProject
+                isFromProject: fromProject,
+                adapterIds: Self.unionAdapterIds(for: sorted, roots: roots)
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    private static func unionAdapterIds(
+        for locs: [LocationRecord],
+        roots: [String: SkillRootRecord]
+    ) -> [String] {
+        var ids = Set<String>()
+        for loc in locs {
+            if let root = roots[loc.skillRootId] {
+                ids.formUnion(root.adapterIds)
+            }
+        }
+        return ids.sorted()
     }
 
     public static func isDirty(_ location: LocationRecord) -> Bool {
@@ -560,21 +575,17 @@ public struct ControlPlane: Sendable {
 
         for adapter in AdapterRegistry.v1 where detected.contains(adapter.id) {
             for relative in adapter.globalSkillRoots {
-                let url = homeDirectory.appendingPathComponent(relative, isDirectory: true)
-                let path = url.path
-                guard FileManager.default.fileExists(atPath: path) else { continue }
-                if var existing = rootByPath[path] {
-                    if !existing.adapterIds.contains(adapter.id) {
-                        existing.adapterIds.append(adapter.id)
-                        existing.adapterIds.sort()
-                        rootByPath[path] = existing
-                    }
-                } else {
-                    rootByPath[path] = SkillRootRecord(
-                        id: stableID("root", path),
-                        adapterIds: [adapter.id],
-                        path: path
-                    )
+                upsertRoot(
+                    path: homeDirectory.appendingPathComponent(relative, isDirectory: true).path,
+                    adapterId: adapter.id,
+                    into: &rootByPath
+                )
+            }
+            for relative in adapter.deepGlobalSkillRoots {
+                let base = homeDirectory.appendingPathComponent(relative, isDirectory: true)
+                guard FileManager.default.fileExists(atPath: base.path) else { continue }
+                for packageParent in deepSkillRootPaths(under: base) {
+                    upsertRoot(path: packageParent, adapterId: adapter.id, into: &rootByPath)
                 }
             }
         }
@@ -663,6 +674,45 @@ public struct ControlPlane: Sendable {
         return found
     }
 
+    private func upsertRoot(
+        path: String,
+        adapterId: String,
+        into rootByPath: inout [String: SkillRootRecord]
+    ) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        if var existing = rootByPath[path] {
+            if !existing.adapterIds.contains(adapterId) {
+                existing.adapterIds.append(adapterId)
+                existing.adapterIds.sort()
+                rootByPath[path] = existing
+            }
+        } else {
+            rootByPath[path] = SkillRootRecord(
+                id: stableID("root", path),
+                adapterIds: [adapterId],
+                path: path
+            )
+        }
+    }
+
+    /// Parents of skill packages found under a deep tree (e.g. `…/plugins/…/skills`).
+    private func deepSkillRootPaths(under base: URL) -> [String] {
+        var parents = Set<String>()
+        guard let enumerator = FileManager.default.enumerator(
+            at: base,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        for case let item as URL in enumerator {
+            guard item.lastPathComponent == "SKILL.md" else { continue }
+            let package = item.deletingLastPathComponent()
+            parents.insert(package.deletingLastPathComponent().path)
+        }
+        return parents.sorted()
+    }
+
     private func discoverSkills(in root: SkillRootRecord) -> [LocationRecord] {
         let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: root.path, isDirectory: true)
@@ -709,10 +759,20 @@ public struct ControlPlane: Sendable {
                 $0.trimmingCharacters(in: .whitespaces)
             }
             if parts.count == 2, parts[0] == "name", !parts[1].isEmpty {
-                return parts[1]
+                return Self.unquoteYAMLScalar(parts[1])
             }
         }
         return fallback
+    }
+
+    static func unquoteYAMLScalar(_ raw: String) -> String {
+        guard raw.count >= 2 else { return raw }
+        if (raw.hasPrefix("\"") && raw.hasSuffix("\""))
+            || (raw.hasPrefix("'") && raw.hasSuffix("'"))
+        {
+            return String(raw.dropFirst().dropLast())
+        }
+        return raw
     }
 
     private func stableID(_ prefix: String, _ path: String) -> String {
