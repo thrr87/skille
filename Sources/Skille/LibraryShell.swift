@@ -6,6 +6,7 @@ struct LibraryShell: View {
     let controlPlane: ControlPlane
     @State private var tab: LibraryTab = .skills
     @State private var skills: [SkillSummary] = []
+    @State private var selectedSkillID: String?
     @State private var toast: String?
     @State private var isScanning = false
 
@@ -14,7 +15,11 @@ struct LibraryShell: View {
             SourcesStub()
                 .tabItem { Label("Sources", systemImage: "shippingbox") }
                 .tag(LibraryTab.sources)
-            SkillsHome(skills: skills)
+            SkillsHome(
+                controlPlane: controlPlane,
+                skills: skills,
+                selection: $selectedSkillID
+            )
                 .tabItem { Label("Skills", systemImage: "square.stack.3d.up") }
                 .tag(LibraryTab.skills)
             ProjectsStub()
@@ -51,6 +56,9 @@ struct LibraryShell: View {
         do {
             let result = try controlPlane.scan()
             skills = controlPlane.listSkills()
+            if let selectedSkillID, !skills.contains(where: { $0.id == selectedSkillID }) {
+                self.selectedSkillID = nil
+            }
             if result.inventoryChanged || manual {
                 let message: String
                 if result.skillsFound == 0 {
@@ -81,25 +89,84 @@ private enum LibraryTab: Hashable {
 }
 
 struct SkillsHome: View {
+    let controlPlane: ControlPlane
     let skills: [SkillSummary]
+    @Binding var selection: String?
 
     var body: some View {
         if skills.isEmpty {
             SkillsEmptyState()
         } else {
             NavigationSplitView {
-                List(skills) { skill in
+                List(skills, selection: $selection) { skill in
                     SkillRow(skill: skill)
+                        .tag(skill.id)
                 }
                 .navigationTitle("Skills")
             } detail: {
-                ContentUnavailableView(
-                    "Select a skill",
-                    systemImage: "square.stack.3d.up",
-                    description: Text("Inspector arrives in the next issue.")
-                )
+                if let selection, let detail = controlPlane.skillDetail(id: selection) {
+                    SkillInspector(detail: detail)
+                } else {
+                    ContentUnavailableView(
+                        "Select a skill",
+                        systemImage: "square.stack.3d.up",
+                        description: Text("Locations and actions appear here.")
+                    )
+                }
             }
         }
+    }
+}
+
+struct SkillInspector: View {
+    let detail: SkillDetail
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("Name", value: detail.summary.displayName)
+                LabeledContent("Locations", value: "\(detail.summary.locationCount)")
+                if detail.summary.isOrphan {
+                    LabeledContent("Status", value: "Orphan")
+                }
+                if detail.summary.hasUpdate {
+                    LabeledContent("Update", value: "Available")
+                }
+                if detail.summary.isDirty {
+                    LabeledContent("Dirty", value: "Local edits")
+                }
+            }
+            Section("Locations") {
+                ForEach(detail.locations) { loc in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(loc.onDiskPath)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+                        Text(rootCaption(loc))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            Section {
+                Button("Edit") {}
+                    .disabled(true)
+                if detail.summary.isOrphan {
+                    Button("Attach Source…") {}
+                        .disabled(true)
+                } else {
+                    Button("Update…") {}
+                        .disabled(true)
+                }
+            }
+        }
+        .navigationTitle(detail.summary.displayName)
+    }
+
+    private func rootCaption(_ loc: LocationSummary) -> String {
+        let adapters = loc.adapterIds.isEmpty ? "shared root" : loc.adapterIds.joined(separator: ", ")
+        return "\(loc.skillRootPath) · \(adapters)"
     }
 }
 

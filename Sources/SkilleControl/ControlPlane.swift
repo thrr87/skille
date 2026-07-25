@@ -49,12 +49,49 @@ public struct ControlPlane: Sendable {
 
     public func listSkills() -> [SkillSummary] {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
-        return snap.locations.map { loc in
-            SkillSummary(
+        return skillSummaries(from: snap)
+    }
+
+    public func skillDetail(id: String) -> SkillDetail? {
+        let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
+        // Orphans: row id == location id. Logical skills (later): row id == logicalSkillId.
+        let locs = snap.locations.filter { $0.id == id || $0.logicalSkillId == id }
+        guard !locs.isEmpty else { return nil }
+        let summary = skillSummaries(from: snap).first { $0.id == id }
+            ?? SkillSummary(
+                id: id,
+                displayName: locs[0].displayName,
+                locationCount: locs.count,
+                isOrphan: locs.allSatisfy { $0.logicalSkillId == nil }
+            )
+        let locations = locs.map { loc in
+            let root = roots[loc.skillRootId]
+            return LocationSummary(
                 id: loc.id,
-                displayName: loc.displayName,
-                locationCount: 1,
-                isOrphan: loc.logicalSkillId == nil,
+                onDiskPath: loc.onDiskPath,
+                skillRootPath: root?.path ?? "",
+                adapterIds: root?.adapterIds ?? []
+            )
+        }
+        .sorted { $0.onDiskPath < $1.onDiskPath }
+        return SkillDetail(summary: summary, locations: locations)
+    }
+
+    private func skillSummaries(from snap: SidecarSnapshot) -> [SkillSummary] {
+        // Group by logicalSkillId when present; otherwise one row per orphan location.
+        var grouped: [String: [LocationRecord]] = [:]
+        for loc in snap.locations {
+            let key = loc.logicalSkillId ?? loc.id
+            grouped[key, default: []].append(loc)
+        }
+        return grouped.map { key, locs in
+            let sorted = locs.sorted { $0.onDiskPath < $1.onDiskPath }
+            return SkillSummary(
+                id: key,
+                displayName: sorted[0].displayName,
+                locationCount: sorted.count,
+                isOrphan: sorted.allSatisfy { $0.logicalSkillId == nil },
                 hasUpdate: false,
                 isDirty: false
             )
@@ -216,5 +253,29 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         self.isOrphan = isOrphan
         self.hasUpdate = hasUpdate
         self.isDirty = isDirty
+    }
+}
+
+public struct LocationSummary: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let onDiskPath: String
+    public let skillRootPath: String
+    public let adapterIds: [String]
+
+    public init(id: String, onDiskPath: String, skillRootPath: String, adapterIds: [String]) {
+        self.id = id
+        self.onDiskPath = onDiskPath
+        self.skillRootPath = skillRootPath
+        self.adapterIds = adapterIds
+    }
+}
+
+public struct SkillDetail: Equatable, Sendable {
+    public let summary: SkillSummary
+    public let locations: [LocationSummary]
+
+    public init(summary: SkillSummary, locations: [LocationSummary]) {
+        self.summary = summary
+        self.locations = locations
     }
 }
