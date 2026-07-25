@@ -52,6 +52,27 @@ public struct ControlPlane: Sendable {
         return skillSummaries(from: snap)
     }
 
+    public func listProjects() -> [ProjectRecord] {
+        let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
+        return snap.projects.sorted { $0.rootPath < $1.rootPath }
+    }
+
+    public func addProject(path: String) throws {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard !snap.projects.contains(where: { $0.rootPath == standardized }) else { return }
+        snap.projects.append(
+            ProjectRecord(id: stableID("proj", standardized), rootPath: standardized)
+        )
+        try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
+    public func removeProject(id: String) throws {
+        var snap = try SidecarStore.load(from: sidecarRoot)
+        snap.projects.removeAll { $0.id == id }
+        try SidecarStore.save(snap, to: sidecarRoot)
+    }
+
     public func skillDetail(id: String) -> SkillDetail? {
         let snap = (try? SidecarStore.load(from: sidecarRoot)) ?? SidecarSnapshot()
         let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
@@ -63,7 +84,8 @@ public struct ControlPlane: Sendable {
                 id: id,
                 displayName: locs[0].displayName,
                 locationCount: locs.count,
-                isOrphan: locs.allSatisfy { $0.logicalSkillId == nil }
+                isOrphan: locs.allSatisfy { $0.logicalSkillId == nil },
+                isFromProject: locs.contains { roots[$0.skillRootId]?.scope == "project" }
             )
         let locations = locs.map { loc in
             let root = roots[loc.skillRootId]
@@ -79,6 +101,7 @@ public struct ControlPlane: Sendable {
     }
 
     private func skillSummaries(from snap: SidecarSnapshot) -> [SkillSummary] {
+        let roots = Dictionary(uniqueKeysWithValues: snap.skillRoots.map { ($0.id, $0) })
         // Group by logicalSkillId when present; otherwise one row per orphan location.
         var grouped: [String: [LocationRecord]] = [:]
         for loc in snap.locations {
@@ -87,13 +110,15 @@ public struct ControlPlane: Sendable {
         }
         return grouped.map { key, locs in
             let sorted = locs.sorted { $0.onDiskPath < $1.onDiskPath }
+            let fromProject = sorted.contains { roots[$0.skillRootId]?.scope == "project" }
             return SkillSummary(
                 id: key,
                 displayName: sorted[0].displayName,
                 locationCount: sorted.count,
                 isOrphan: sorted.allSatisfy { $0.logicalSkillId == nil },
                 hasUpdate: false,
-                isDirty: false
+                isDirty: false,
+                isFromProject: fromProject
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -136,6 +161,25 @@ public struct ControlPlane: Sendable {
             )
         }
 
+        // Project-scoped roots: only for user-added Projects (no full-disk crawl).
+        for project in previous.projects {
+            let projectURL = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+            for relative in AdapterRegistry.allProjectSkillRoots {
+                let url = projectURL.appendingPathComponent(relative, isDirectory: true)
+                let path = url.path
+                guard FileManager.default.fileExists(atPath: path) else { continue }
+                if rootByPath[path] == nil {
+                    rootByPath[path] = SkillRootRecord(
+                        id: stableID("root", path),
+                        adapterIds: [],
+                        path: path,
+                        scope: "project",
+                        projectId: project.id
+                    )
+                }
+            }
+        }
+
         var locations: [LocationRecord] = []
         for root in rootByPath.values {
             locations.append(contentsOf: discoverSkills(in: root))
@@ -144,7 +188,8 @@ public struct ControlPlane: Sendable {
 
         let next = SidecarSnapshot(
             skillRoots: rootByPath.values.sorted { $0.path < $1.path },
-            locations: locations
+            locations: locations,
+            projects: previous.projects
         )
         let changed = next != previous
         try SidecarStore.save(next, to: sidecarRoot)
@@ -238,6 +283,7 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
     public let isOrphan: Bool
     public let hasUpdate: Bool
     public let isDirty: Bool
+    public let isFromProject: Bool
 
     public init(
         id: String,
@@ -245,7 +291,8 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         locationCount: Int = 1,
         isOrphan: Bool = true,
         hasUpdate: Bool = false,
-        isDirty: Bool = false
+        isDirty: Bool = false,
+        isFromProject: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -253,6 +300,7 @@ public struct SkillSummary: Identifiable, Equatable, Sendable {
         self.isOrphan = isOrphan
         self.hasUpdate = hasUpdate
         self.isDirty = isDirty
+        self.isFromProject = isFromProject
     }
 }
 

@@ -5,12 +5,20 @@ public struct SkillRootRecord: Codable, Equatable, Sendable, Identifiable {
     public var adapterIds: [String]
     public var path: String
     public var scope: String
+    public var projectId: String?
 
-    public init(id: String, adapterIds: [String], path: String, scope: String = "global") {
+    public init(
+        id: String,
+        adapterIds: [String],
+        path: String,
+        scope: String = "global",
+        projectId: String? = nil
+    ) {
         self.id = id
         self.adapterIds = adapterIds
         self.path = path
         self.scope = scope
+        self.projectId = projectId
     }
 }
 
@@ -36,9 +44,22 @@ public struct LocationRecord: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public struct ProjectRecord: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var rootPath: String
+    public var addedAt: Date
+
+    public init(id: String, rootPath: String, addedAt: Date = Date()) {
+        self.id = id
+        self.rootPath = rootPath
+        self.addedAt = addedAt
+    }
+}
+
 struct SidecarSnapshot: Codable, Equatable {
     var skillRoots: [SkillRootRecord] = []
     var locations: [LocationRecord] = []
+    var projects: [ProjectRecord] = []
 }
 
 enum SidecarStore {
