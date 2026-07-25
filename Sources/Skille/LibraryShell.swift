@@ -227,6 +227,7 @@ struct SkillInspector: View {
     @State private var showLocationChooser = false
     @State private var reviewLocationId: String?
     @State private var updateChooser = false
+    @State private var showAttachSource = false
 
     var body: some View {
         List {
@@ -259,8 +260,7 @@ struct SkillInspector: View {
             Section {
                 Button("Edit") { startEdit() }
                 if detail.summary.isOrphan {
-                    Button("Attach Source…") {}
-                        .disabled(true)
+                    Button("Attach Source…") { showAttachSource = true }
                 } else {
                     Button("Update…") { startUpdate() }
                         .disabled(!detail.summary.hasUpdate && !detail.summary.isDirty)
@@ -274,6 +274,17 @@ struct SkillInspector: View {
                 skillPath: path,
                 title: detail.summary.displayName
             )
+        }
+        .sheet(isPresented: $showAttachSource) {
+            AttachSourceSheet(
+                controlPlane: controlPlane,
+                locationId: detail.summary.id,
+                suggestedURL: controlPlane.suggestedGitOrigin(
+                    forLocationPath: detail.locations.first?.onDiskPath ?? ""
+                )
+            ) {
+                onInventoryChanged()
+            }
         }
         .sheet(isPresented: Binding(
             get: { reviewLocationId != nil },
